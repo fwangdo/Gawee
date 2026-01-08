@@ -1,1 +1,6 @@
-# TODO
+torch
+torchvision
+onnx
+onnxruntime
+numpy
+pytest
