@@ -1,21 +1,22 @@
 # gawee_ir/graph.py
 
 from __future__ import annotations
-from typing import *  
+from typing     import *  
 
+DimType = List[int]
 
 class Value:
     def __init__(
         self,
         name: str,
-        shape: Optional[tuple[int, ...]] = None,
-        dtype: Optional[str] = None,
+        shape: DimType | None = None,
+        dtype: str | None = None,
     ):
         self.name = name
         self.shape = shape
         self.dtype = dtype
 
-        self.producer: Optional[Node] = None
+        self.producer: Node | None = None
         self.consumers: List[Node] = []
 
     def __repr__(self) -> str:
@@ -30,13 +31,13 @@ class Node:
         op_type: str,
         inputs: List[Value],
         outputs: List[Value],
-        attrs: Optional[Dict[str, Any]] = None,
-        name: Optional[str] = None,
+        attrs: Dict[str, Any] | None = None,
+        name: str | None = None,
     ):
         self.op_type = op_type
         self.inputs = inputs
         self.outputs = outputs
-        self.attrs: Dict[str, Any] = attrs or {}
+        self.attrs: Dict[str, Any] = attrs if attrs is not None else {}
         self.name = name
 
         for v in self.inputs:
@@ -65,8 +66,8 @@ class Graph:
     def get_or_create_value(
         self,
         name: str,
-        shape: Optional[tuple[int, ...]] = None,
-        dtype: Optional[str] = None,
+        shape: DimType | None = None,
+        dtype: str | None = None,
     ) -> Value:
         if name in self.values:
             v = self.values[name]
@@ -124,3 +125,4 @@ class Graph:
         print("\n[Outputs]")
         for v in self.outputs:
             print(f"  {v}")
+        return 
