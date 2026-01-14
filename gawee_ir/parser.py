@@ -36,11 +36,14 @@ class Parser:
         # ------------------------------------------------------------
         # 1) Graph inputs
         # ------------------------------------------------------------
+
+        # all tensors
         input_names = set(init.name for init in graph_proto.initializer)
 
+        print(f'input_names -> {input_names}')
         for inp in graph_proto.input:
             if inp.name in input_names:
-                # constant cases. 
+                # print(f'it is not input from the outer world ')
                 continue  
 
             shape = cls._get_tensor_shape(inp)
@@ -92,6 +95,8 @@ class Parser:
                 else:
                     # Tensor / Graph / SparseTensor 등은 일단 무시
                     pass
+
+            # print(f'attrs -> {attrs}\n')
 
             n = Node(
                 op_type=node_proto.op_type,

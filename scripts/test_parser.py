@@ -6,6 +6,8 @@ def main():
     parser.add_argument('--path')
     args = parser.parse_args()
     g = Parser.parse_onnx(args.path)
+
+    print(f'\n\n\nIR representation.')
     g.dump()
     return 
 

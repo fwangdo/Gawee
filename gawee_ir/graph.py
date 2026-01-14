@@ -13,11 +13,11 @@ class Value:
         dtype: str | None = None,
     ):
         self.name = name
-        self.shape = shape
-        self.dtype = dtype
+        self.shape = shape # tensor shape 
+        self.dtype = dtype # data type.
 
-        self.producer: Node | None = None
-        self.consumers: List[Node] = []
+        self.producer: Node | None = None # predecessor. 
+        self.consumers: List[Node] = [] # user. 
 
     def __repr__(self) -> str:
         shape = self.shape if self.shape is not None else "?"
@@ -34,7 +34,7 @@ class Node:
         attrs: Dict[str, Any] | None = None,
         name: str | None = None,
     ):
-        self.op_type = op_type
+        self.op_type = op_type # operator type.
         self.inputs = inputs
         self.outputs = outputs
         self.attrs: Dict[str, Any] = attrs if attrs is not None else {}
