@@ -1,8 +1,9 @@
 from __future__ import annotations
 from typing     import *
 
+# onnx 
 import onnx
-from onnx       import numpy_helper
+import onnx.numpy_helper as numpy_helper
 
 # IR 
 from gawee_ir.graph import Graph, Node, Value
@@ -43,7 +44,7 @@ class Parser:
                 continue  
 
             shape = cls._get_tensor_shape(inp)
-            v = g.get_or_create_value(
+            v = g.get_value(
                 name=inp.name,
                 shape=shape,
                 dtype=str(inp.type.tensor_type.elem_type),
@@ -55,7 +56,7 @@ class Parser:
         # ------------------------------------------------------------
         for init in graph_proto.initializer:
             arr = numpy_helper.to_array(init)
-            g.get_or_create_value(
+            g.get_value(
                 name=init.name,
                 shape=list(arr.shape),
                 dtype=str(arr.dtype),
@@ -71,10 +72,10 @@ class Parser:
             for name in node_proto.input:
                 if name == "":
                     continue
-                inputs.append(g.get_or_create_value(name))
+                inputs.append(g.get_value(name))
 
             for name in node_proto.output:
-                outputs.append(g.get_or_create_value(name))
+                outputs.append(g.get_value(name))
 
             attrs: Dict[str, Any] = {}
             for attr in node_proto.attribute:
@@ -105,7 +106,7 @@ class Parser:
         # 4) Graph outputs
         # ------------------------------------------------------------
         for out in graph_proto.output:
-            v = g.get_or_create_value(out.name)
+            v = g.get_value(out.name)
             g.add_output(v)
 
         return g

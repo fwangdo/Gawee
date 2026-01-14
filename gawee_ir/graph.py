@@ -63,7 +63,7 @@ class Graph:
 
     # ---- Value helpers ----
 
-    def get_or_create_value(
+    def get_value(
         self,
         name: str,
         shape: DimType | None = None,
@@ -77,6 +77,7 @@ class Graph:
                 v.dtype = dtype
             return v
 
+        # create. 
         v = Value(name=name, shape=shape, dtype=dtype)
         self.values[name] = v
         return v
