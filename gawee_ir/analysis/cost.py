@@ -1,9 +1,11 @@
 # gawee_ir/analysis/cost.py
 
 from __future__ import annotations
-from typing import Dict, Any, List, Tuple
+from typing     import *  
 
 from gawee_ir.graph import Graph, Node, Value
+from gawee_ir.constant.ops import *
+
 from dataclasses    import dataclass
 
 # data structure
@@ -199,37 +201,42 @@ class CostModel:
         return (sum(reads), sum(writes))
 
     # ---------------- internal: flops ----------------
+    # count all flops for each op. 
 
     @classmethod
     def _node_flops(cls, n: Node) -> int | None:
         op = n.op_type
 
-        if op == "Conv":
+        if op == CONV:
             return cls._flops_conv(n)
-        if op in ("MatMul", "Gemm"):
+        if op in { MATMUL, GEMM }:  
             return cls._flops_matmul(n)
-        if op in ("Add", "Mul", "Sub", "Div"):
+        if op in { ADD, MUL, SUB, DIV }: 
             return cls._flops_elementwise(n)
 
         # shape-preserving unary ops: ~1 op per element (very rough)
-        if op in ("Relu", "Sigmoid", "Tanh", "Identity", "BatchNormalization"):
+        # if op in ("Relu", "Sigmoid", "Tanh", "Identity", "BatchNormalization"):
+        if op in { RELU, SIGMOID, TANH, ID, BATCH_NORM }:
             return cls._flops_unary(n)
 
         # unknown: skip
-        return None
+        # raise Exception(f'[ERROR]: {op} is not supported yet')
+        return 
+
 
     @staticmethod
     def _flops_unary(n: Node) -> int | None:
         if not n.outputs:
-            return None
+            return 
         out = n.outputs[0]
         elems = _numel(out.shape)
         if elems is None:
-            return None
+            return 
 
         # Rough: 1 op per element (Relu/Identity), but Sigmoid/Tanh are more expensive.
         # Keep it simple and consistent.
         return elems
+
 
     @staticmethod
     def _flops_elementwise(n: Node) -> int | None:
@@ -243,10 +250,13 @@ class CostModel:
         # One op per output element (very rough; ignores broadcast overhead)
         return elems
 
+
     @staticmethod
     def _flops_matmul(n: Node) -> int | None:
+        # note that, we do not consider addition part in GEMM op. 
         if len(n.inputs) < 2 or not n.outputs:
-            return None
+            return # error case. we cannot count.  
+
         a, b = n.inputs[0], n.inputs[1]
         out = n.outputs[0]
         if a.shape is None or b.shape is None or out.shape is None:
@@ -274,6 +284,7 @@ class CostModel:
         # mul+add = 2 flops per MAC
         flops = batch * int(M) * int(N) * int(K1) * 2
         return flops
+
 
     @staticmethod
     def _flops_conv(n: Node) -> int | None:
