@@ -15,7 +15,19 @@ class NodeCost:
     flops: int | None
     bytes_read: int | None
     bytes_write: int | None 
-    
+
+
+@dataclass
+class AllCost:  
+    total_flops: int 
+    total_bytes_read: int
+    total_bytes_write: int
+    known_nodes_flops: int
+    known_nodes_read: int
+    known_nodes_write: int
+    num_nodes: int
+    per_node: List[NodeCost]
+
 
 # --------- dtype handling ---------
 
@@ -97,7 +109,7 @@ class CostModel:
     """
 
     @classmethod
-    def run(cls, g: Graph) -> Dict[str, Any]:
+    def run(cls, g: Graph) -> AllCost:
         per_node: List[NodeCost] = []
 
         total_flops = 0
@@ -127,42 +139,40 @@ class CostModel:
                 total_w += w
                 known_w += 1
 
-        return {
-            "total_flops": total_flops,
-            "total_bytes_read": total_r,
-            "total_bytes_write": total_w,
-            "known_nodes_flops": known_flops,
-            "known_nodes_read": known_r,
-            "known_nodes_write": known_w,
-            "num_nodes": len(g.nodes),
-            "per_node": per_node,
-        }
+        return AllCost(total_flops, 
+                       total_r, 
+                       total_w, 
+                       known_flops, 
+                       known_r, 
+                       known_w, 
+                       len(g.nodes), 
+                       per_node)
 
     @classmethod
     def print_report(cls, g: Graph, topk: int = 20) -> None:
         report = cls.run(g)
 
         print("=== Cost Report ===")
-        print(f"Nodes: {report['num_nodes']}")
-        print(f"Total FLOPs (known only): {report['total_flops']}")
-        print(f"Total Read  (known only): {report['total_bytes_read']} bytes")
-        print(f"Total Write (known only): {report['total_bytes_write']} bytes")
+        print(f"Nodes: {report.num_nodes}")
+        print(f"Total FLOPs (known only): {report.total_flops}")
+        print(f"Total Read  (known only): {report.total_bytes_read} bytes")
+        print(f"Total Write (known only): {report.total_bytes_write} bytes")
         print(
-            f"Coverage: flops={report['known_nodes_flops']}/{report['num_nodes']}, "
-            f"read={report['known_nodes_read']}/{report['num_nodes']}, "
-            f"write={report['known_nodes_write']}/{report['num_nodes']}"
+            f"Coverage: flops={report.known_nodes_flops}/{report.num_nodes}, "
+            f"read={report.known_nodes_read}/{report.num_nodes}, "
+            f"write={report.known_nodes_write}/{report.num_nodes}"
         )
 
         # top-k by flops
-        nodes = [r for r in report["per_node"] if r["flops"] is not None]
-        nodes.sort(key=lambda r: r["flops"], reverse=True)
+        nodes = [r for r in report.per_node if r.flops is not None]
+        nodes.sort(key=lambda r: r.flops, reverse=True) # type: ignore 
 
         print(f"\n[Top {min(topk, len(nodes))} nodes by FLOPs]")
         for r in nodes[:topk]:
-            nm = r["name"] if r["name"] else "-"
+            nm = r.name if r.name else "-"
             print(
-                f"  ({r['index']:4d}) {r['op_type']:<20} name={nm:<20} "
-                f"flops={r['flops']:<12} read={r['bytes_read']} write={r['bytes_write']}"
+                f"  ({r.index:4d}) {r.op_type:<20} name={nm:<20} "
+                f"flops={r.flops:<12} read={r.bytes_read} write={r.bytes_write}"
             )
 
     # ---------------- internal: bytes ----------------
