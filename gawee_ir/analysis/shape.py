@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing     import * 
 
 from gawee_ir.graph import * 
-from gawee_ir.constant.operators import *
+from gawee_ir.constant.ops import *
 
 
 class ShapeInference:
@@ -17,26 +17,20 @@ class ShapeInference:
     def _infer_node(cls, n: Node) -> None:
         op = n.op_type
 
-        if op in { "Relu", "Sigmoid", "Tanh", "Identity", "BatchNormalization" }:
+        if op in { RELU, SIGMOID, TANH, ID, BATCH_NORM }:
             # elementwise / shape-preserving
             cls._propagate_same(n)
-
-        elif op in { "Add", "Mul", "Sub", "Div" }:
+        elif op in { ADD, MUL, SUB, DIV }:
             # broadcast elementwise (simplified: same shape)
             cls._propagate_same(n)
-
-        elif op == "Conv":
+        elif op == CONV:
             cls._infer_conv(n)
-
-        elif op in ("MatMul", "Gemm"):
+        elif op in { MATMUL, GEMM }:
             cls._infer_matmul(n)
-
-        elif op == "Reshape":
+        elif op == RESHAPE:
             cls._infer_reshape(n)
-
-        elif op == "Transpose":
+        elif op == TRANS:
             cls._infer_transpose(n)
-
         else:
             # unknown op: do not crash, leave shapes as-is
             pass
@@ -45,18 +39,24 @@ class ShapeInference:
 
     @staticmethod
     def _propagate_same(n: Node) -> None:
-        if not n.inputs:
+        if len(n.inputs) == 0:
             return
+
+        # normally, input should be pone. 
         in_shape = n.inputs[0].shape
         if in_shape is None:
             return
+
+        # normally, output should be one. 
         for out in n.outputs:
             out.shape = list(in_shape)
+        return 
+
 
     @staticmethod
     def _infer_conv(n: Node) -> None:
-        # inputs: X[N,Cin,H,W], W[Cout,Cin/groups,Kh,Kw], (B)
-        if len(n.inputs) < 2:
+        # inputs: X[N,Cin,H,W], W[Cout,Cin/groups,Kh,Kw], (Bias)
+        if len(n.inputs) < 2: # it should have input and weight at least.
             return
 
         x, w = n.inputs[0], n.inputs[1]
@@ -73,11 +73,16 @@ class ShapeInference:
         pad_w = pads[1] + pads[3]
         sh, sw = strides
 
+        # standard method to find out output size. 
         Hout = (H + pad_h - Kh) // sh + 1
         Wout = (W + pad_w - Kw) // sw + 1
 
         for out in n.outputs:
+            # n is the batch size. 
             out.shape = [N, Cout, Hout, Wout]
+
+        return 
+
 
     @staticmethod
     def _infer_matmul(n: Node) -> None:
@@ -97,12 +102,17 @@ class ShapeInference:
         for out in n.outputs:
             out.shape = out_shape
 
+        return 
+
+
     @staticmethod
     def _infer_reshape(n: Node) -> None:
         if not n.inputs:
             return
         # shape usually comes from initializer; assume already resolved
         pass
+        return 
+
 
     @staticmethod
     def _infer_transpose(n: Node) -> None:
@@ -119,3 +129,4 @@ class ShapeInference:
         out_shape = [x.shape[i] for i in perm]
         for out in n.outputs:
             out.shape = out_shape
+        return 
