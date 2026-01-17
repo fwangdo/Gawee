@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 from typing     import *  
+import numpy as np 
 
 DimType = List[int]
 
@@ -11,18 +12,24 @@ class Value:
         name: str,
         shape: DimType | None = None,
         dtype: str | None = None,
+        data: np.ndarray | None = None,   
     ):
         self.name = name
-        self.shape = shape # tensor shape 
-        self.dtype = dtype # data type.
+        self.shape = shape
+        self.dtype = dtype
+        self.data = data             
 
-        self.producer: Node | None = None # predecessor. 
-        self.consumers: List[Node] = [] # user. 
+        self.producer: Node | None = None
+        self.consumers: List[Node] = []
+
+    def is_const(self) -> bool:
+        return self.data is not None
 
     def __repr__(self) -> str:
         shape = self.shape if self.shape is not None else "?"
         dtype = self.dtype if self.dtype is not None else "?"
-        return f"Value(name={self.name}, shape={shape}, dtype={dtype})"
+        const = " const" if self.is_const() else ""
+        return f"Value(name={self.name}, shape={shape}, dtype={dtype}){const}"
 
 
 class Node:

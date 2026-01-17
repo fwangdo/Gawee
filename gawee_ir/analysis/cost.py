@@ -31,6 +31,18 @@ class AllCost:
     per_node: List[NodeCost]
 
 
+    def __repr__(self) -> str: 
+        temp = dict()
+        temp["total_flops"] = self.total_flops 
+        temp["total_bytes_read"] = self.total_bytes_read
+        temp["total_bytes_write"] = self.total_bytes_write
+        temp["known_nodes_flops"] = self.known_nodes_flops 
+        temp["known_nodes_read"] = self.known_nodes_read 
+        temp["known_nodes_write"] =self.known_nodes_write 
+        temp["num_node"] = self.num_nodes 
+        return str(temp) 
+
+
 # --------- dtype handling ---------
 
 _DTYPE_BYTES: Dict[str, int] = {
