@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import *
 import numpy as np
 from gawee_ir.graph import Graph, Node, Value
+from gawee_ir.constant.ops import *
 
 
 class ConvBNFolding:
@@ -16,15 +17,16 @@ class ConvBNFolding:
     def run(cls, g: Graph) -> bool:
         changed = False
 
+        # folding for all nodes. 
         for bn in list(g.nodes):
-            if bn.op_type != "BatchNormalization":
+            if bn.op_type != BATCH_NORM:
                 continue
             if len(bn.inputs) < 5:
                 continue
 
             x = bn.inputs[0]
             conv = x.producer
-            if conv is None or conv.op_type != "Conv":
+            if conv is None or conv.op_type != CONV:
                 continue
 
             # BN params
@@ -55,9 +57,9 @@ class ConvBNFolding:
 
             # ----- compute folding -----
             gamma = scale.data.astype(np.float32)
-            beta  = bias.data.astype(np.float32)
-            mu    = mean.data.astype(np.float32)
-            var_  = var.data.astype(np.float32)
+            beta  = bias.data.astype(np.float32) # type: ignore 
+            mu    = mean.data.astype(np.float32) # type: ignore
+            var_  = var.data.astype(np.float32)  # type: ignore
 
             inv_std = 1.0 / np.sqrt(var_ + eps)          # [Cout]
             a = gamma * inv_std                           # [Cout]
