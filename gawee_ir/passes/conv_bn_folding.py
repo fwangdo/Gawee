@@ -5,6 +5,7 @@ from typing import *
 import numpy as np
 from gawee_ir.graph import Graph, Node, Value
 from gawee_ir.constant.ops import *
+from gawee_ir.constant.value import *
 
 
 class ConvBNFolding:
@@ -12,6 +13,13 @@ class ConvBNFolding:
     Fold: Conv -> BatchNormalization  (in inference mode)
     into: Conv' with updated (W', B')
     """
+    @classmethod 
+    def _check_is_conv_bn(cls, x: Value) -> bool:
+        conv = x.producer
+        if conv is None or conv.op_type != CONV:
+            return False
+        return True 
+
 
     @classmethod
     def run(cls, g: Graph) -> bool:
@@ -19,11 +27,13 @@ class ConvBNFolding:
 
         # folding for all nodes. 
         for bn in list(g.nodes):
+            # check batch normalization condition. 
             if bn.op_type != BATCH_NORM:
                 continue
             if len(bn.inputs) < 5:
                 continue
 
+            # considering only conv + bn. 
             x = bn.inputs[0]
             conv = x.producer
             if conv is None or conv.op_type != CONV:
@@ -31,7 +41,7 @@ class ConvBNFolding:
 
             # BN params
             scale, bias, mean, var = bn.inputs[1:5]
-            eps = float(bn.attrs.get("epsilon", 1e-5))
+            eps = float(bn.attrs.get(EPS, 1e-5))
 
             if not (scale.is_const() and bias.is_const() and mean.is_const() and var.is_const()):
                 continue
@@ -39,8 +49,8 @@ class ConvBNFolding:
             # Conv params
             if len(conv.inputs) < 2:
                 continue
-            W = conv.inputs[1]
-            B = conv.inputs[2] if len(conv.inputs) >= 3 else None
+            W = conv.inputs[1] # conv weight  
+            B = conv.inputs[2] if len(conv.inputs) >= 3 else None # conv bias. 
 
             if not W.is_const():
                 continue
@@ -61,20 +71,19 @@ class ConvBNFolding:
             mu    = mean.data.astype(np.float32) # type: ignore
             var_  = var.data.astype(np.float32)  # type: ignore
 
-            inv_std = 1.0 / np.sqrt(var_ + eps)          # [Cout]
-            a = gamma * inv_std                           # [Cout]
+            inv_std = 1.0 / np.sqrt(var_ + eps)         
+            # a means ( W / std )
+            a = gamma * inv_std                         
 
             Wf = W_arr.astype(np.float32) * a.reshape(Cout, 1, 1, 1)
 
             if B is None:
                 b0 = np.zeros((Cout,), dtype=np.float32)
             else:
-                b0 = B.data.astype(np.float32).reshape(Cout)
+                b0 = B.data.astype(np.float32).reshape(Cout) # type: ignore
 
             Bf = (b0 - mu) * a + beta                     # [Cout]
 
-            # dtype: 원 dtype으로 되돌리고 싶으면 아래 캐스팅 정책을 정하세요.
-            # 지금은 float32로 고정 (toy 포트폴리오에선 합리적)
             newW = Value(
                 name=W.name + "_folded",
                 shape=list(Wf.shape),
@@ -93,6 +102,7 @@ class ConvBNFolding:
             g.values[newB.name] = newB
 
             # ----- rewrite conv inputs (bias 유무 분기 필수) -----
+            # replacement. 
             conv.inputs[1] = newW
             if len(conv.inputs) == 2:
                 conv.inputs.append(newB)
@@ -109,6 +119,7 @@ class ConvBNFolding:
                 # 그래프가 예상 패턴이 아니면 스킵 (보수적으로)
                 continue
 
+            # replacement part. 
             # detach bn from x consumer list
             if bn in x.consumers:
                 x.consumers.remove(bn)
