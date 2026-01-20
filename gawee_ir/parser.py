@@ -41,6 +41,7 @@ class TorchParser:
 
         # --- 2) nodes ---
         for node in gm.graph.nodes:
+            print(f'operator -> {node.op}')
             if node.op == "placeholder":
                 v = g.get_value(
                     name=node.name,
@@ -55,7 +56,7 @@ class TorchParser:
                 v = g.get_value(name=node.target)
                 env[node.name] = v
 
-            elif node.op in ("call_function", "call_method", "call_module"):
+            elif node.op in {"call_function", "call_method", "call_module"}:
                 ins: List[Value] = []
                 for arg in node.all_input_nodes:
                     ins.append(env[arg.name])

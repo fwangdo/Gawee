@@ -88,10 +88,9 @@ IR 설계의 주요 관심사:
 - 불필요한 reshape / transpose 제거 또는 정규화
 - 그래프 단순화(canonicalization)
 
-각 최적화는 다음을 전제로 한다:
+각 최적화는 onnx basic graph optimizations 를 기초로 한다:
 
-- 연산의 **의미적 동등성 유지**
-- shape / dtype 일관성 유지
+- https://onnxruntime.ai/docs/performance/model-optimizations/graph-optimizations.html#basic-graph-optimizations
 
 ---
 

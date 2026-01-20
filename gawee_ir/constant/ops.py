@@ -17,3 +17,5 @@ TRANS      = "Transpose"
 # extra ops used by some ONNX graphs
 MAXPOOL    = "MaxPool"
 REDUCE_MEAN = "ReduceMean"
+
+# FX layouts. 
