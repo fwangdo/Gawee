@@ -19,3 +19,10 @@ MAXPOOL    = "MaxPool"
 REDUCE_MEAN = "ReduceMean"
 
 # FX layouts. 
+PLACEHOLDER = "placeholder"
+GET_ATTR = "get_attr"
+CALL_FUNCTION = "call_function"
+CALL_METHOD = "call_method"
+CALL_MODULE = "call_module"
+TENSOR_META = "tensor_meta"
+OUTPUT = "output"
