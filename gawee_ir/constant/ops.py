@@ -13,3 +13,7 @@ MATMUL     = "MatMul"
 GEMM       = "Gemm"
 RESHAPE    = "Reshape"
 TRANS      = "Transpose"
+
+# extra ops used by some ONNX graphs
+MAXPOOL    = "MaxPool"
+REDUCE_MEAN = "ReduceMean"

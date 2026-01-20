@@ -39,9 +39,20 @@ class AllCost:
         temp["known_nodes_flops"] = self.known_nodes_flops 
         temp["known_nodes_read"] = self.known_nodes_read 
         temp["known_nodes_write"] =self.known_nodes_write 
-        temp["num_node"] = self.num_nodes 
+        temp["num_nodes"] = self.num_nodes 
         return str(temp) 
 
+
+    def get_dict(self) -> Dict[str, Any]:
+        temp = dict()
+        temp["total_flops"] = self.total_flops 
+        temp["total_bytes_read"] = self.total_bytes_read
+        temp["total_bytes_write"] = self.total_bytes_write
+        temp["known_nodes_flops"] = self.known_nodes_flops 
+        temp["known_nodes_read"] = self.known_nodes_read 
+        temp["known_nodes_write"] =self.known_nodes_write 
+        temp["num_nodes"] = self.num_nodes 
+        return temp 
 
 # --------- dtype handling ---------
 

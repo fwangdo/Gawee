@@ -28,6 +28,7 @@ class ConvBNFolding:
         # folding for all nodes. 
         for bn in list(g.nodes):
             # check batch normalization condition. 
+            print(f'[LOG]: op_type -> {bn.op_type}')
             if bn.op_type != BATCH_NORM:
                 continue
             if len(bn.inputs) < 5:
@@ -39,22 +40,29 @@ class ConvBNFolding:
             if conv is None or conv.op_type != CONV:
                 continue
 
+            # log, oeprator fusion is ready to apply. 
+            # print(f'[LOG]: conv + bn -> {bn}')
+
             # BN params
             scale, bias, mean, var = bn.inputs[1:5]
             eps = float(bn.attrs.get(EPS, 1e-5))
 
             if not (scale.is_const() and bias.is_const() and mean.is_const() and var.is_const()):
+                # print(f'[ERROR]: There are some concepts which are not const ')
                 continue
 
             # Conv params
             if len(conv.inputs) < 2:
+                # print(f'[ERROR]: conv input -> {conv.inputs}')
                 continue
             W = conv.inputs[1] # conv weight  
             B = conv.inputs[2] if len(conv.inputs) >= 3 else None # conv bias. 
 
             if not W.is_const():
+                # print(f'[ERROR]: W -> {W}')
                 continue
             if B is not None and (not B.is_const()):
+                # print(f'[ERROR]: B -> {B}')
                 continue
 
             W_arr = W.data

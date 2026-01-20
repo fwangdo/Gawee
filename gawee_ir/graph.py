@@ -100,6 +100,58 @@ class Graph:
     def add_node(self, node: Node) -> None:
         self.nodes.append(node)
 
+    # ---- Rewrite utilities ----
+
+    def make_const(
+        self,
+        data: np.ndarray,
+        name: str | None = None,
+        dtype: str | None = None,
+    ) -> Value:
+        """Create a constant Value registered in this graph."""
+        if name is None:
+            name = f"const_{len(self.values)}"
+
+        base = name
+        i = 0
+        while name in self.values:
+            i += 1
+            name = f"{base}_{i}"
+
+        v = Value(
+            name=name,
+            shape=list(data.shape),
+            dtype=(dtype if dtype is not None else str(data.dtype).lower()),
+            data=data,
+        )
+        self.values[v.name] = v
+        return v
+
+    def replace_all_uses(self, old: Value, new: Value) -> None:
+        """Replace every use of `old` with `new` (inputs + graph outputs)."""
+        if old is new:
+            return
+
+        # Update node inputs
+        for user in list(old.consumers):
+            replaced = False
+            for i, inp in enumerate(user.inputs):
+                if inp is old:
+                    user.inputs[i] = new
+                    replaced = True
+            if replaced:
+                if user not in new.consumers:
+                    new.consumers.append(user)
+                if user in old.consumers:
+                    old.consumers.remove(user)
+
+        # Update graph outputs
+        for i, outv in enumerate(self.outputs):
+            if outv is old:
+                self.outputs[i] = new
+
+        return
+
     # ---- Query utilities ----
 
     def find_nodes_by_op(self, op_type: str) -> List[Node]:

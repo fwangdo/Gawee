@@ -4,6 +4,7 @@ from gawee_ir.parser import Parser
 from gawee_ir.analysis.shape import ShapeInference
 from gawee_ir.analysis.cost import CostModel
 from gawee_ir.passes.conv_bn_folding import ConvBNFolding
+from gawee_ir.passes.constant_folding import ConstantFolding
 
 
 def print_summary(title: str, report: dict):
@@ -26,18 +27,19 @@ def main():
     ShapeInference.run(g)
 
     # 2. Cost before optimization
-    before = CostModel.run(g)
+    before = CostModel.run(g).get_dict()
     print_summary("BEFORE Conv+BN Folding", before)
 
     # 3. Apply optimization
     changed = ConvBNFolding.run(g)
+    # changed = ConstantFolding.run(g)
     print(f"\nOptimization applied: {changed}")
 
     # 4. Re-run shape inference (safe)
     ShapeInference.run(g)
 
     # 5. Cost after optimization
-    after = CostModel.run(g)
+    after = CostModel.run(g).get_dict()
     print_summary("AFTER Conv+BN Folding", after)
 
     # 6. Diff

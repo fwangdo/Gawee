@@ -1,89 +1,109 @@
+# gawee_frontend/torch_parser.py
+
 from __future__ import annotations
-from typing     import *
+from typing import *
 
-# onnx 
-import onnx
-import onnx.numpy_helper as numpy_helper
+import torch
+import torch.fx as fx
+import numpy as np
 
-# IR 
 from gawee_ir.graph import Graph, Node, Value
 
 
-class Parser: 
+class TorchParser:
 
     @classmethod
-    def _get_tensor_shape(cls, value_info: onnx.ValueInfoProto) -> List[int] | None:
-        if not value_info.type.HasField("tensor_type"):
-            return None
-        shape = []
-        for d in value_info.type.tensor_type.shape.dim:
-            if d.HasField("dim_value"):
-                shape.append(int(d.dim_value))
-            else:
-                # unknown / symbolic dim
-                shape.append(-1)
-        return shape
-
-
-    @classmethod
-    def parse_onnx(cls, path: str) -> Graph:
-        model = onnx.load(path)
-        gp = model.graph
+    def parse_fx(
+        cls,
+        gm: fx.GraphModule,
+        example_inputs: Tuple[torch.Tensor, ...],
+    ) -> Graph:
         g = Graph()
 
-        # --- 1) initializers: weight constants ---
-        for init in gp.initializer:
-            arr = numpy_helper.to_array(init)  # np.ndarray
+        # --- 0) shape propagation ---
+        from torch.fx.passes.shape_prop import ShapeProp
+        ShapeProp(gm).propagate(*example_inputs)
+
+        # --- 1) parameters / buffers -> constants ---
+        params = dict(gm.named_parameters())
+        buffers = dict(gm.named_buffers())
+
+        for name, t in {**params, **buffers}.items():
+            arr = t.detach().cpu().numpy()
             v = g.get_value(
-                name=init.name,
+                name=name,
                 shape=list(arr.shape),
-                dtype=str(arr.dtype).lower(),
+                dtype=str(arr.dtype),
             )
             v.data = arr
 
-        input_names = set(init.name for init in gp.initializer)
+        env: Dict[str, Value] = {}
 
-        # --- 2) graph inputs (exclude initializers) ---
-        for inp in gp.input:
-            if inp.name in input_names:
-                continue
-            shape = cls._get_tensor_shape(inp)
-            # elem_type -> 아직 string으로 박아둔 상태면, 나중에 mapper를 두는 게 좋습니다.
-            dtype = str(inp.type.tensor_type.elem_type)
-            v = g.get_value(name=inp.name, shape=shape, dtype=dtype)
-            g.add_input(v)
+        # --- 2) nodes ---
+        for node in gm.graph.nodes:
+            if node.op == "placeholder":
+                v = g.get_value(
+                    name=node.name,
+                    shape=list(node.meta["tensor_meta"].shape),
+                    dtype=str(node.meta["tensor_meta"].dtype),
+                )
+                g.add_input(v)
+                env[node.name] = v
 
-        # --- 3) nodes ---
-        for node_proto in gp.node:
-            ins = [g.get_value(name=n) for n in node_proto.input]
-            outs = [g.get_value(name=n) for n in node_proto.output]
+            elif node.op == "get_attr":
+                # parameter / buffer access
+                v = g.get_value(name=node.target)
+                env[node.name] = v
 
-            attrs = {}
-            for a in node_proto.attribute:
-                # 최소 구현: ints/floats/i/s
-                if a.type == onnx.AttributeProto.INTS:
-                    attrs[a.name] = list(a.ints)
-                elif a.type == onnx.AttributeProto.FLOATS:
-                    attrs[a.name] = list(a.floats)
-                elif a.type == onnx.AttributeProto.INT:
-                    attrs[a.name] = int(a.i)
-                elif a.type == onnx.AttributeProto.FLOAT:
-                    attrs[a.name] = float(a.f)
-                elif a.type == onnx.AttributeProto.STRING:
-                    attrs[a.name] = a.s.decode("utf-8", errors="ignore")
+            elif node.op in ("call_function", "call_method", "call_module"):
+                ins: List[Value] = []
+                for arg in node.all_input_nodes:
+                    ins.append(env[arg.name])
 
-            n = Node(
-                op_type=node_proto.op_type,
-                inputs=ins,
-                outputs=outs,
-                attrs=attrs,
-                name=node_proto.name if node_proto.name else None,
-            )
-            g.add_node(n)
+                # output
+                tm = node.meta.get("tensor_meta", None)
+                shape = list(tm.shape) if tm else None
+                dtype = str(tm.dtype) if tm else None
 
-        # --- 4) outputs ---
-        for out in gp.output:
-            v = g.get_value(name=out.name)
-            g.add_output(v)
+                out = g.get_value(
+                    name=node.name,
+                    shape=shape,
+                    dtype=dtype,
+                )
+
+                attrs = {
+                    "target": str(node.target),
+                    "op": node.op,
+                }
+
+                n = Node(
+                    op_type=str(node.target),
+                    inputs=ins,
+                    outputs=[out],
+                    attrs=attrs,
+                    name=node.name,
+                )
+                g.add_node(n)
+                env[node.name] = out
+
+            elif node.op == "output":
+                # output can be tuple
+                def extract(v):
+                    if isinstance(v, fx.Node):
+                        return env[v.name]
+                    elif isinstance(v, (list, tuple)):
+                        return [extract(x) for x in v]
+                    else:
+                        return None
+
+                outs = extract(node.args[0])
+                if isinstance(outs, list):
+                    for v in outs:
+                        g.add_output(v)
+                else:
+                    g.add_output(outs)
+
+            else:
+                raise NotImplementedError(f"Unsupported FX op: {node.op}")
 
         return g
