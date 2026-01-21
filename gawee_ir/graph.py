@@ -38,12 +38,14 @@ class Node:
         op_type: str,
         inputs: List[Value],
         outputs: List[Value],
+        # mod: str,  
         attrs: Dict[str, Any] | None = None,
         name: str | None = None,
     ):
         self.op_type = op_type # operator type.
         self.inputs = inputs
         self.outputs = outputs
+        # self.mod = mod
         self.attrs: Dict[str, Any] = attrs if attrs is not None else {}
         self.name = name
 
@@ -72,7 +74,7 @@ class Graph:
 
     def get_value(
         self,
-        name: str,
+        name: Any,
         shape: DimType | None = None,
         dtype: str | None = None,
     ) -> Value:

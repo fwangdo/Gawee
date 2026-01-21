@@ -13,6 +13,35 @@ from gawee_ir.constant.ops import *
 
 class TorchParser:
 
+    # parsing names. 
+    # scaffold. 
+    @classmethod 
+    def _parse_call_module(cls, node: fx.Node):
+        return cls.gm.get_submodule(node.target) # type: ignore 
+
+
+    @classmethod 
+    def _parse_call_method(cls, node: fx.Node):
+        return node.target 
+
+
+    @classmethod 
+    def _parse_call_function(cls, node: fx.Node):
+        return node.target 
+
+    
+    @classmethod 
+    def _parse_call_name(cls, node: fx.Node): 
+        if node.op == CALL_FUNCTION: 
+            return cls._parse_call_function(node) 
+        elif node.op == CALL_METHOD:
+            return cls._parse_call_method(node) 
+        elif node.op == CALL_MODULE:
+            return cls._parse_call_module(node) 
+        else:
+            raise Exception(f'{node.op} is not supported yet')
+
+
     # preliminaries
     @classmethod
     def _extract(cls, v):
@@ -24,6 +53,7 @@ class TorchParser:
             return
 
 
+    # parsing for each operation type. 
     @classmethod 
     def _parse_placeholder(cls, node: fx.Node) -> None:
         v = cls.g.get_value(
@@ -39,6 +69,7 @@ class TorchParser:
     @classmethod    
     def _parse_get_attr(cls, node: fx.Node) -> None:
         # parameter / buffer access
+        # e.g., linear.weight. 
         v = cls.g.get_value(name=node.target)
         cls.env[node.name] = v
         return      
@@ -52,8 +83,8 @@ class TorchParser:
 
         # output
         tm = node.meta.get(TENSOR_META, None)
-        shape = list(tm.shape) if tm else None
-        dtype = str(tm.dtype) if tm else None
+        shape = list(tm.shape) if tm is not None else None
+        dtype = str(tm.dtype) if tm is not None else None
 
         out = cls.g.get_value(
             name=node.name,
@@ -61,15 +92,20 @@ class TorchParser:
             dtype=dtype,
         )
 
+        mod = cls._parse_call_name(node) 
+        # print(f'mod -> {mod}')
         attrs = {
-            "target": str(node.target),
+            "target": node.target, # dl opearation. 
             "op": node.op,
+            "mod": mod
         }
+
 
         n = Node(
             op_type=str(node.target),
             inputs=ins,
             outputs=[out],
+            # mod=mod,
             attrs=attrs,
             name=node.name,
         )
@@ -85,7 +121,7 @@ class TorchParser:
             for v in outs:
                 cls.g.add_output(v)
         else:
-            cls.g.add_output(outs)
+            cls.g.add_output(outs) # type: ignore 
         return
 
 
@@ -95,6 +131,8 @@ class TorchParser:
         gm: fx.GraphModule,
         example_inputs: Tuple[torch.Tensor, ...],
     ) -> Graph:
+        # init. 
+        cls.gm = gm 
         cls.g = Graph()
         cls.env = dict()
 
@@ -105,6 +143,10 @@ class TorchParser:
         # --- 1) parameters / buffers -> constants ---
         params = dict(gm.named_parameters())
         buffers = dict(gm.named_buffers())
+
+        # ... 
+        # print(f'params -> {list(params.keys())} ') # weights changed by gradient descent.   
+        # print(f'buffers -> {list(buffers.keys())} ') # var, mean, etc..  
 
         for name, t in {**params, **buffers}.items():
             arr = t.detach().cpu().numpy()
@@ -117,7 +159,7 @@ class TorchParser:
 
         # --- 2) nodes ---
         for node in gm.graph.nodes:
-            print(f'operator -> {node.op}')
+            # print(f'operator -> {node.op}')
             if node.op == PLACEHOLDER:
                 cls._parse_placeholder(node)
             elif node.op == GET_ATTR:

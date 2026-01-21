@@ -7,6 +7,9 @@ from gawee_ir.graph import Graph, Node, Value
 from gawee_ir.constant.ops import *
 
 from dataclasses    import dataclass
+import torch.nn     as nn 
+import operator
+
 
 # data structure
 @dataclass
@@ -223,12 +226,62 @@ class CostModel:
 
         return (sum(reads), sum(writes))
 
+    # parsing functions. 
+    @classmethod 
+    def _check_is_conv(cls, n: Node) -> bool:
+        mod = n.attrs["mod"]
+        return isinstance(mod, (nn.Conv1d, nn.Conv2d, nn.Conv3d))
+
+
+    @classmethod 
+    def _check_is_primitive(cls, n: Node) -> str:
+        mod = n.attrs["mod"]
+        if mod == operator.add:
+            return ADD  
+        elif mod == operator.sub: 
+            return SUB
+        elif mod == operator.mul:
+            return MUL
+
+        raise Exception(f'[ERROR] {n} is not supported')
+
+
+    @classmethod
+    def _check_is_module(cls, n: Node) -> bool:
+        mod = n.attrs["mod"]
+        return isinstance(mod, nn)
+
+    
+    @classmethod
+    def _parse_module_name(cls, n: Node) -> str:  
+
+
+    @classmethod 
+    def _refine_op(cls, n: Node) -> str: 
+        # print(f'n -> {n.attrs}')
+        # mod = gm.get_submodule(node.target)
+        mod = n.attrs["mod"]
+        op = n.attrs["op"]
+
+        if cls._check_is_conv(n):
+            return CONV
+        elif op == CALL_FUNCTION: 
+            return cls._check_is_primitive(n)
+        elif cls._check_is_module(n):
+            return 
+
+        raise Exception(f'[ERROR]: {n.op_type} is not supported yet. ')
+
+
     # ---------------- internal: flops ----------------
     # count all flops for each op. 
 
     @classmethod
     def _node_flops(cls, n: Node) -> int | None:
-        op = n.op_type
+        """
+        we only consider conv / matmul / elemenetwise as flops. 
+        """
+        op = cls._refine_op(n)
 
         if op == CONV:
             return cls._flops_conv(n)
@@ -237,28 +290,13 @@ class CostModel:
         if op in { ADD, MUL, SUB, DIV }: 
             return cls._flops_elementwise(n)
 
-        # shape-preserving unary ops: ~1 op per element (very rough)
-        # if op in ("Relu", "Sigmoid", "Tanh", "Identity", "BatchNormalization"):
-        if op in { RELU, SIGMOID, TANH, ID, BATCH_NORM }:
-            return cls._flops_unary(n)
+        # we do not consider this. 
+        # if op in { RELU, SIGMOID, TANH, ID, BATCH_NORM }:
+        #     return 
 
         # unknown: skip
         # raise Exception(f'[ERROR]: {op} is not supported yet')
         return 
-
-
-    @staticmethod
-    def _flops_unary(n: Node) -> int | None:
-        if not n.outputs:
-            return 
-        out = n.outputs[0]
-        elems = _numel(out.shape)
-        if elems is None:
-            return 
-
-        # Rough: 1 op per element (Relu/Identity), but Sigmoid/Tanh are more expensive.
-        # Keep it simple and consistent.
-        return elems
 
 
     @staticmethod
