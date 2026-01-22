@@ -13,8 +13,18 @@ from gawee_ir.constant.ops import *
 
 class TorchParser:
 
-    # parsing names. 
-    # scaffold. 
+    # extract information.  
+    @classmethod 
+    def _extract_axes(cls, node: fx.Node):
+        return 
+
+    
+    @classmethod 
+    def _extract_keepdims(cls, node: fx.Node):
+        return 
+
+
+    # parsing for each call.  
     @classmethod 
     def _parse_call_module(cls, node: fx.Node):
         return cls.gm.get_submodule(node.target) # type: ignore 
@@ -93,13 +103,16 @@ class TorchParser:
         )
 
         mod = cls._parse_call_name(node) 
+        axes = cls._extract_axes(node)
+        keepdims = cls._extract_keepdims(node)
         # print(f'mod -> {mod}')
         attrs = {
             "target": node.target, # dl opearation. 
             "op": node.op,
-            "mod": mod
+            "mod": mod,
+            "axes": axes, 
+            "keepdims": keepdims, 
         }
-
 
         n = Node(
             op_type=str(node.target),

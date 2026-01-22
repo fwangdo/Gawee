@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+from typing import *
 import numpy as np
 
 from gawee_ir.graph import Graph, Node, Value
@@ -7,10 +7,11 @@ from gawee_ir.constant.ops import ADD, CONV, GEMM, MUL, REDUCE_MEAN, RELU, RESHA
 
 
 def _is_const(v: Value) -> bool:
-    return v.data is not None
+    return v.data is not None # TODO: check whether it is valid or not. 
 
 
 def _as_array(v: Value) -> np.ndarray:
+    # convert Value into numpy array. 
     assert v.data is not None
     return v.data
 
@@ -55,6 +56,7 @@ class ConstantFolding:
 
             # 1) fold if all inputs const (light ops only)
             if op in {ADD, MUL, RELU, RESHAPE, REDUCE_MEAN}:
+                # note that, if the op is fused, it should be absorbed by predecessor. 
                 changed |= cls._fold_if_all_const(g, n)
                 # node might be removed
                 if n not in g.nodes:
@@ -85,18 +87,15 @@ class ConstantFolding:
                 if len(n.inputs) != 2 or not (_is_const(n.inputs[0]) and _is_const(n.inputs[1])):
                     return False
                 out = _as_array(n.inputs[0]) + _as_array(n.inputs[1])
-
             elif op == MUL:
                 if len(n.inputs) != 2 or not (_is_const(n.inputs[0]) and _is_const(n.inputs[1])):
                     return False
                 out = _as_array(n.inputs[0]) * _as_array(n.inputs[1])
-
             elif op == RELU:
                 if len(n.inputs) != 1 or not _is_const(n.inputs[0]):
                     return False
                 out = np.maximum(_as_array(n.inputs[0]), 0)
-
-            elif op == REDUCE_MEAN:
+            elif op == REDUCE_MEAN: # operation to reduction dimensions by average.  
                 if len(n.inputs) != 1 or not _is_const(n.inputs[0]):
                     return False
                 axes = n.attrs.get("axes", None)
