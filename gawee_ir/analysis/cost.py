@@ -312,6 +312,7 @@ class CostModel:
         if op == CONV:
             return cls._flops_conv(n)
         if op in { MATMUL }:  
+            # print(f'result of matmul -> {cls._flops_matmul(n)}')
             return cls._flops_matmul(n)
         if op in { ADD, MUL, SUB, DIV }: 
             return cls._flops_elementwise(n)
@@ -367,20 +368,38 @@ class CostModel:
 
     @staticmethod
     def _flops_linear_matmul(n: Node) -> int | None:
+        # Linear: y = x @ W^T (+ b)
+        # input  : [..., in_features]
+        # output : [..., out_features]
+
         assert len(n.inputs) == 1
 
-        input = n.inputs[0]  
-        output = n.outputs[0]
+        x = n.inputs[0]
+        out = n.outputs[0]
 
-        if input.shape is None or output.shape is None:
-            raise NoneCaseError(n.op_type, input.shape is None, output.shape is None)
+        if x.shape is None or out.shape is None:
+            raise NoneCaseError(n.op_type, x.shape is None, out.shape is None)
 
-        if len(input.shape) < 2 or len(output.shape) < 2: 
+        if len(x.shape) < 2 or len(out.shape) < 2:
             raise DimensionError(n.op_type)
 
-        mod = CostModel._get_module(n) 
+        mod = CostModel._get_module(n)  # nn.Linear
+        assert isinstance(mod, nn.Linear), f'[ERRRO]: {mod} is not linear.'
+        in_features = mod.in_features
+        out_features = mod.out_features
 
-        return 
+        # batch = product of prefix dims (everything except last dim)
+        batch = _numel(x.shape[:-1])
+        if batch is None:
+            return None
+
+        # MACs = batch * in_features * out_features
+        # 1 MAC = 1 mul + 1 add = 2 FLOPs
+        flops = batch * int(in_features) * int(out_features) * 2
+        # print(f'flops -> {flops}')
+
+        # print(f'node -> {n.name}, {n}, {n.attrs}')
+        return flops
 
 
     @staticmethod
