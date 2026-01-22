@@ -4,6 +4,8 @@ import numpy as np
 
 from gawee_ir.graph import Graph, Node, Value
 from gawee_ir.constant.ops import ADD, CONV, GEMM, MUL, REDUCE_MEAN, RELU, RESHAPE
+from gawee_ir.passes.errors import *
+from gawee_ir.constant.passes import *
 
 
 def _is_const(v: Value) -> bool:
@@ -96,15 +98,9 @@ class ConstantFolding:
                     return False
                 out = np.maximum(_as_array(n.inputs[0]), 0)
             elif op == REDUCE_MEAN: # operation to reduction dimensions by average.  
-                if len(n.inputs) != 1 or not _is_const(n.inputs[0]):
-                    return False
-                axes = n.attrs.get("axes", None)
-                keepdims = int(n.attrs.get("keepdims", 1))
-                axis = tuple(axes) if axes is not None else None
-                out = np.mean(_as_array(n.inputs[0]), axis=axis, keepdims=bool(keepdims))
-
+                raise NotImplementedError(CONSTANT_FOLDING, REDUCE_MEAN) 
             elif op == RESHAPE:
-                # ONNX Reshape: inputs = [data, shape]
+                # print()
                 if len(n.inputs) < 2:
                     return False
                 data_v, shape_v = n.inputs[0], n.inputs[1]

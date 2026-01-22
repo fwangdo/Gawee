@@ -22,6 +22,7 @@ g = TorchParser.parse_fx(gm, (torch.randn(1, 3, 224, 224),))
 ShapeInference.run(g)
 
 print("== Before ==")
+CostModel.init(gm)
 CostModel.print_report(g)
 
 # ConvBNFolding.run(g)

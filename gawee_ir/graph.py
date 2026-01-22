@@ -3,6 +3,7 @@
 from __future__ import annotations
 from typing     import *  
 import numpy as np 
+import torch.fx as fx 
 
 DimType = List[int]
 
@@ -38,14 +39,18 @@ class Node:
         op_type: str,
         inputs: List[Value],
         outputs: List[Value],
-        # mod: str,  
+        raw_name: str,  
+        raw: fx.Node,
+
         attrs: Dict[str, Any] | None = None,
         name: str | None = None,
     ):
         self.op_type = op_type # operator type.
         self.inputs = inputs
         self.outputs = outputs
-        # self.mod = mod
+        self.raw_name = raw_name
+        self.raw = raw 
+
         self.attrs: Dict[str, Any] = attrs if attrs is not None else {}
         self.name = name
 

@@ -29,7 +29,6 @@ class DimensionError(Exception):
 
 
 class NoneCaseError(Exception):
-    
     def __init__(
         self,
         op,

@@ -9,18 +9,37 @@ import numpy as np
 
 from gawee_ir.graph import Graph, Node, Value
 from gawee_ir.constant.ops import *
+from gawee_ir.mapper import *
 
 
 class TorchParser:
 
     # extract information.  
-    @classmethod 
+    @classmethod
     def _extract_axes(cls, node: fx.Node):
+        print(f'operator -> {node}')
+
+        # dim can be in args or kwargs
+        if "dim" in node.kwargs:
+            dim = node.kwargs["dim"]
+        elif len(node.args) >= 2:
+            dim = node.args[1]
+        else:
+            return
+
+        # normalize: int -> tuple[int]
+        if isinstance(dim, int):
+            return (dim,)
+        if isinstance(dim, (list, tuple)):
+            return tuple(dim)
+
         return 
 
-    
-    @classmethod 
+
+    @classmethod
     def _extract_keepdims(cls, node: fx.Node):
+        if "keepdim" in node.kwargs:
+            return int(bool(node.kwargs["keepdim"]))
         return 
 
 
@@ -103,22 +122,26 @@ class TorchParser:
         )
 
         mod = cls._parse_call_name(node) 
-        axes = cls._extract_axes(node)
-        keepdims = cls._extract_keepdims(node)
-        # print(f'mod -> {mod}')
+        op_type = Mapper.translate(node, cls.gm)
+
+        # will be added. but not now.
+        # axes = cls._extract_axes(node)
+        # keepdims = cls._extract_keepdims(node)
+
         attrs = {
             "target": node.target, # dl opearation. 
             "op": node.op,
             "mod": mod,
-            "axes": axes, 
-            "keepdims": keepdims, 
+            # "axes": axes, 
+            # "keepdims": keepdims, 
         }
 
         n = Node(
-            op_type=str(node.target),
+            op_type=op_type,
             inputs=ins,
             outputs=[out],
-            # mod=mod,
+            raw_name=str(node.target),
+            raw = node, 
             attrs=attrs,
             name=node.name,
         )

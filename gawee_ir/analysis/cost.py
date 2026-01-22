@@ -9,6 +9,7 @@ from gawee_ir.constant.ops import *
 from dataclasses    import dataclass
 import torch.nn     as nn 
 from gawee_ir.analysis.errors import DimensionError, NoneCaseError 
+from gawee_ir.mapper          import *
  
 
 # data structure
@@ -136,6 +137,15 @@ class CostModel:
       - Unknown shapes propagate as None and will be skipped in totals.
     """
 
+    @classmethod 
+    def init(
+        cls,
+        gm: fx.GraphModule,
+    ) -> None:
+        cls.gm = gm 
+        return 
+
+
     @classmethod
     def run(cls, g: Graph) -> AllCost:
         per_node: List[NodeCost] = []
@@ -149,6 +159,7 @@ class CostModel:
         known_w = 0
 
         for idx, n in enumerate(g.nodes):
+            # print(f'op_type -> {n.op_type}')
             flops = cls._node_flops(n)
             r, w = cls._node_bytes(n)
 
@@ -289,14 +300,16 @@ class CostModel:
         op = n.attrs["op"]
 
         if op == CALL_MODULE:
-            return cls._parse_module_name(n) 
+            res = cls._parse_module_name(n) 
         elif op == CALL_FUNCTION: 
-            return cls._parse_primitive(n)
+            res = cls._parse_primitive(n)
         elif op == CALL_METHOD:
             raise Exception(f'[ERROR]: {n} is called by call method')
-
-        raise Exception(f'[ERROR]: {n.op_type} is not supported yet. ')
-
+        else:
+            raise Exception(f'[ERROR]: {n.op_type} is not supported yet. ')
+        
+        # print(f'refined operator -> {res}')
+        return res 
 
     # ---------------- internal: flops ----------------
     # count all flops for each op. 
@@ -306,7 +319,8 @@ class CostModel:
         """
         we only consider conv / matmul / elemenetwise as flops. 
         """
-        op = cls._refine_op(n)
+        # op = cls._refine_op(n)
+        op = Mapper.translate(n.raw, cls.gm)
         # print(f'operators -> {op} ')
 
         if op == CONV:
@@ -418,7 +432,7 @@ class CostModel:
         x = n.inputs[0]
         y = n.outputs[0]
         conv = n.attrs["mod"]  # nn.Conv2d
-        assert isinstance(conv, nn.Conv2d), f'[ERROR] conv error. '
+        assert isinstance(conv, nn.Conv2d), f'[ERROR] conv error. conv -> {conv} / {type(conv)} '
        
         # print()
         # print(f'x -> {x} / {type(x)}')
