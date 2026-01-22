@@ -234,41 +234,60 @@ class CostModel:
 
 
     @classmethod 
-    def _check_is_primitive(cls, n: Node) -> str:
-        mod = n.attrs["mod"]
-        if mod == operator.add:
-            return ADD  
-        elif mod == operator.sub: 
-            return SUB
-        elif mod == operator.mul:
-            return MUL
+    def _parse_primitive(cls, n: Node) -> str:
+        mod = n.attrs["mod"].__name__
+        # print(f'mod -> {mod}, type -> {type(mod)}')
 
+        if mod == "add":
+            return ADD  
+        elif mod == "sub": 
+            return SUB
+        elif mod == "mul":
+            return MUL
+        elif mod == "flatten":
+            return FLATTEN
+
+        print(f'attrs -> {n.attrs["target"]}')
         raise Exception(f'[ERROR] {n} is not supported')
 
 
     @classmethod
     def _check_is_module(cls, n: Node) -> bool:
         mod = n.attrs["mod"]
-        return isinstance(mod, nn)
+        return isinstance(mod, nn.Module)
 
     
     @classmethod
     def _parse_module_name(cls, n: Node) -> str:  
+        mod = n.attrs["mod"]
+        if isinstance(mod, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
+            return CONV
+        if isinstance(mod, nn.Linear):
+            return MATMUL
+        if isinstance(mod, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+            return BATCH_NORM
+        if isinstance(mod, nn.ReLU):
+            return RELU
+        if isinstance(mod, (nn.MaxPool1d, nn.MaxPool2d, nn.MaxPool3d)):
+            return MAXPOOL
+        if isinstance(mod, (nn.AvgPool1d, nn.AvgPool2d, nn.AvgPool3d, nn.AdaptiveAvgPool1d, nn.AdaptiveAvgPool2d, nn.AdaptiveAvgPool3d)):
+            return AVGPOOL
+
+        raise Exception(f'[ERROR]: {mod} is not defined yet')
 
 
     @classmethod 
     def _refine_op(cls, n: Node) -> str: 
         # print(f'n -> {n.attrs}')
         # mod = gm.get_submodule(node.target)
-        mod = n.attrs["mod"]
         op = n.attrs["op"]
 
-        if cls._check_is_conv(n):
-            return CONV
+        if op == CALL_MODULE:
+            return cls._parse_module_name(n) 
         elif op == CALL_FUNCTION: 
-            return cls._check_is_primitive(n)
-        elif cls._check_is_module(n):
-            return 
+            return cls._parse_primitive(n)
+        elif op == CALL_METHOD:
+            raise Exception(f'[ERROR]: {n} is called by call method')
 
         raise Exception(f'[ERROR]: {n.op_type} is not supported yet. ')
 
