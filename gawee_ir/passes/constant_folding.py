@@ -84,36 +84,23 @@ class ConstantFolding:
         op = n.op_type
         out: np.ndarray | None = None
 
-        try:
-            if op == ADD:
-                if len(n.inputs) != 2 or not (_is_const(n.inputs[0]) and _is_const(n.inputs[1])):
-                    return False
-                out = _as_array(n.inputs[0]) + _as_array(n.inputs[1])
-            elif op == MUL:
-                if len(n.inputs) != 2 or not (_is_const(n.inputs[0]) and _is_const(n.inputs[1])):
-                    return False
-                out = _as_array(n.inputs[0]) * _as_array(n.inputs[1])
-            elif op == RELU:
-                if len(n.inputs) != 1 or not _is_const(n.inputs[0]):
-                    return False
-                out = np.maximum(_as_array(n.inputs[0]), 0)
-            elif op == REDUCE_MEAN: # operation to reduction dimensions by average.  
-                raise NotImplementedError(CONSTANT_FOLDING, REDUCE_MEAN) 
-            elif op == RESHAPE:
-                # print()
-                if len(n.inputs) < 2:
-                    return False
-                data_v, shape_v = n.inputs[0], n.inputs[1]
-                if not (_is_const(data_v) and _is_const(shape_v)):
-                    return False
-                new_shape = tuple(int(x) for x in _as_array(shape_v).reshape(-1).tolist())
-                out = np.reshape(_as_array(data_v), new_shape)
-
-            else:
+        if op == ADD:
+            if len(n.inputs) != 2 or not (_is_const(n.inputs[0]) and _is_const(n.inputs[1])):
                 return False
-
-        except Exception:
-            return False
+            out = _as_array(n.inputs[0]) + _as_array(n.inputs[1])
+        elif op == MUL:
+            if len(n.inputs) != 2 or not (_is_const(n.inputs[0]) and _is_const(n.inputs[1])):
+                return False
+            out = _as_array(n.inputs[0]) * _as_array(n.inputs[1])
+        elif op == RELU:
+            if len(n.inputs) != 1 or not _is_const(n.inputs[0]):
+                return False
+            out = np.maximum(_as_array(n.inputs[0]), 0)
+        elif op == REDUCE_MEAN: # operation to reduction dimensions by average.  
+            # TODO 
+            raise NotImplementedError(CONSTANT_FOLDING, REDUCE_MEAN) 
+        elif op == RESHAPE:
+            raise NotImplementedError(CONSTANT_FOLDING, RESHAPE)
 
         if out is None:
             return False
