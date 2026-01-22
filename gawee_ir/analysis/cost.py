@@ -8,8 +8,8 @@ from gawee_ir.constant.ops import *
 
 from dataclasses    import dataclass
 import torch.nn     as nn 
-import operator
-
+from gawee_ir.analysis.errors import DimensionError, NoneCaseError 
+ 
 
 # data structure
 @dataclass
@@ -203,6 +203,12 @@ class CostModel:
                 f"flops={r.flops:<12} read={r.bytes_read} write={r.bytes_write}"
             )
 
+    # helper functions. 
+    @staticmethod
+    def _get_module(n: Node) -> nn.Module:
+        assert n.attrs['op'] == CALL_MODULE, f'[ERROR]: {n} is not module' 
+        return n.attrs['mod']
+
     # ---------------- internal: bytes ----------------
 
     @classmethod
@@ -301,20 +307,15 @@ class CostModel:
         we only consider conv / matmul / elemenetwise as flops. 
         """
         op = cls._refine_op(n)
+        # print(f'operators -> {op} ')
 
         if op == CONV:
             return cls._flops_conv(n)
-        if op in { MATMUL, GEMM }:  
+        if op in { MATMUL }:  
             return cls._flops_matmul(n)
         if op in { ADD, MUL, SUB, DIV }: 
             return cls._flops_elementwise(n)
 
-        # we do not consider this. 
-        # if op in { RELU, SIGMOID, TANH, ID, BATCH_NORM }:
-        #     return 
-
-        # unknown: skip
-        # raise Exception(f'[ERROR]: {op} is not supported yet')
         return 
 
 
@@ -332,13 +333,11 @@ class CostModel:
 
 
     @staticmethod
-    def _flops_matmul(n: Node) -> int | None:
-        # note that, we do not consider addition part in GEMM op. 
-        if len(n.inputs) < 2 or not n.outputs:
-            return # error case. we cannot count.  
-
+    def _flop_multi_matmul(n: Node) -> int | None:
         a, b = n.inputs[0], n.inputs[1]
         out = n.outputs[0]
+
+        # print(f'matmul: a -> {a}, b -> {b}, out -> {out}')
         if a.shape is None or b.shape is None or out.shape is None:
             return None
 
@@ -352,9 +351,9 @@ class CostModel:
         N = b.shape[-1]
 
         if any(d < 0 for d in (M, K1, K2, N)):
-            return None
+            raise DimensionError(MATMUL)
         if K1 != K2:
-            return None
+            raise DimensionError(MATMUL)
 
         # batch multiplier = product of prefix dims of output (out[:-2])
         batch = _numel(out.shape[:-2])
@@ -367,38 +366,59 @@ class CostModel:
 
 
     @staticmethod
+    def _flops_linear_matmul(n: Node) -> int | None:
+        assert len(n.inputs) == 1
+
+        input = n.inputs[0]  
+        output = n.outputs[0]
+
+        if input.shape is None or output.shape is None:
+            raise NoneCaseError(n.op_type, input.shape is None, output.shape is None)
+
+        if len(input.shape) < 2 or len(output.shape) < 2: 
+            raise DimensionError(n.op_type)
+
+        mod = CostModel._get_module(n) 
+
+        return 
+
+
+    @staticmethod
+    def _flops_matmul(n: Node) -> int | None:
+        assert len(n.inputs) > 0, f'[ERROR]'
+
+        if len(n.inputs) >= 2: 
+            return CostModel._flop_multi_matmul(n) 
+        else:
+            return CostModel._flops_linear_matmul(n) 
+
+
+    @staticmethod
     def _flops_conv(n: Node) -> int | None:
-        # X[N, Cin, H, W], W[Cout, Cin/groups, Kh, Kw] -> Y[N, Cout, Hout, Wout]
-        if len(n.inputs) < 2 or not n.outputs:
-            return None
-
-        x, w = n.inputs[0], n.inputs[1]
+        # input activation
+        x = n.inputs[0]
         y = n.outputs[0]
+        conv = n.attrs["mod"]  # nn.Conv2d
+        assert isinstance(conv, nn.Conv2d), f'[ERROR] conv error. '
+       
+        # print()
+        # print(f'x -> {x} / {type(x)}')
+        # print(f'y -> {y} / {type(y)}')
 
-        if x.shape is None or w.shape is None or y.shape is None:
+        if x.shape is None or y.shape is None:
             return None
-        if len(x.shape) != 4 or len(w.shape) != 4 or len(y.shape) != 4:
+        if len(x.shape) != 4 or len(y.shape) != 4:
             return None
 
         N, Cin, _, _ = x.shape
-        Cout, Cin_per_g, Kh, Kw = w.shape
-        _, _, Hout, Wout = y.shape
+        _, Cout, Hout, Wout = y.shape
 
-        if any(d < 0 for d in (N, Cin, Cout, Cin_per_g, Kh, Kw, Hout, Wout)):
-            return None
+        Kh, Kw = conv.kernel_size
+        groups = conv.groups
 
-        groups = int(n.attrs.get("group", 1))
-        if groups <= 0:
-            groups = 1
+        # MACs per output element
+        mac_per_out = (Cin // groups) * Kh * Kw
 
-        # Consistency: Cin_per_g should be Cin/groups, but some exports may omit/leave unknown.
-        # We'll trust weight shape primarily.
-        # MACs per output element = Cin_per_g * Kh * Kw
-        mac_per_out = int(Cin_per_g) * int(Kh) * int(Kw)
-
-        # number of output elements = N * Cout * Hout * Wout
-        out_elems = int(N) * int(Cout) * int(Hout) * int(Wout)
-
-        # mul+add counted as 2 flops per MAC
+        out_elems = N * Cout * Hout * Wout
         flops = out_elems * mac_per_out * 2
         return flops
