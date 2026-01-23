@@ -128,6 +128,15 @@ IR 설계의 주요 관심사:
 
 ---
 
+## 파이프라인
+
+- torch fx 그래프를 Gawee ir로 파싱
+- Gawee ir에서 최적화 수행
+- ir을 json 형태로 저장
+- mlir 기반 수행 기능 정의(TODO)
+
+---
+
 ## 참고
 
 - PyTorch ONNX Export 문서
