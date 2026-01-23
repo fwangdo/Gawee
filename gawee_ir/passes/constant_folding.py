@@ -60,6 +60,7 @@ class ConstantFolding:
             if op in {ADD, MUL, RELU, RESHAPE, REDUCE_MEAN}:
                 # note that, if the op is fused, it should be absorbed by predecessor. 
                 changed |= cls._fold_if_all_const(g, n)
+                # print(f'folded -> {cls._fold_if_all_const(g, n)}')
                 # node might be removed
                 if n not in g.nodes:
                     continue
@@ -67,8 +68,10 @@ class ConstantFolding:
             # 2) local simplifications / param folding
             if op == ADD:
                 changed |= cls._simplify_add(g, n)
+                # print(f'simp add res -> {cls._simplify_add(g, n)}')
             elif op == MUL:
                 changed |= cls._simplify_mul(g, n)
+                # print(f'simp add res -> {cls._simplify_mul(g, n)}')
 
         return changed
 
@@ -131,14 +134,7 @@ class ConstantFolding:
             g.remove_node(n)
             return True
 
-        # Conv/Gemm bias folding: (producer(x) + const)
-        if _is_const(b):
-            prod = a.producer
-            if prod is not None and prod.op_type == CONV:
-                return cls._fold_add_into_conv_bias(g, prod, n, b)
-            if prod is not None and prod.op_type == GEMM:
-                return cls._fold_add_into_gemm_bias(g, prod, n, b)
-
+        # Conv/Gemm bias folding: (producer(x) + const) # TODO. 
         return False
 
     @classmethod
@@ -159,80 +155,3 @@ class ConstantFolding:
             return True
 
         return False
-
-    # ----------------------------
-    # parameter folding: Conv/Gemm bias
-    # ----------------------------
-
-    @classmethod
-    def _fold_add_into_conv_bias(cls, g: Graph, conv: Node, add: Node, cst: Value) -> bool:
-        # Conv inputs: [X, W, (B?)]
-        if len(conv.inputs) < 2:
-            return False
-
-        W = conv.inputs[1]
-        if not _is_const(W):
-            return False
-
-        W_arr = _as_array(W)
-        if W_arr.ndim != 4:
-            return False
-
-        Cout = int(W_arr.shape[0])
-
-        try:
-            bc = _as_array(cst).reshape(-1)
-            if bc.size == 1:
-                bc = np.full((Cout,), float(bc[0]), dtype=np.float32)
-            elif bc.size != Cout:
-                return False
-        except Exception:
-            return False
-
-        if len(conv.inputs) >= 3:
-            B = conv.inputs[2]
-            if not _is_const(B):
-                return False
-            b0 = _as_array(B).astype(np.float32).reshape(Cout)
-        else:
-            b0 = np.zeros((Cout,), dtype=np.float32)
-
-        new_b = (b0 + bc.astype(np.float32)).astype(np.float32)
-        newB = g.make_const(new_b)
-
-        if len(conv.inputs) >= 3:
-            conv.inputs[2] = newB
-        else:
-            conv.inputs.append(newB)
-
-        g.replace_all_uses(add.outputs[0], conv.outputs[0])
-        g.remove_node(add)
-        return True
-
-    @classmethod
-    def _fold_add_into_gemm_bias(cls, g: Graph, gemm: Node, add: Node, cst: Value) -> bool:
-        # Gemm: inputs = [A, B, (C?)]
-        if len(gemm.inputs) < 2:
-            return False
-
-        bias = gemm.inputs[2] if len(gemm.inputs) >= 3 else None
-        if bias is not None and not _is_const(bias):
-            return False
-
-        try:
-            bc = _as_array(cst).astype(np.float32)
-            if bias is None:
-                gemm.inputs.append(g.make_const(bc))
-            else:
-                new_bias = (_as_array(bias).astype(np.float32) + bc).astype(np.float32)
-                gemm.inputs[2] = g.make_const(new_bias)
-        except Exception:
-            return False
-
-        g.replace_all_uses(add.outputs[0], gemm.outputs[0])
-        g.remove_node(add)
-        return True
-
-
-def run(graph: Graph) -> bool:
-    return ConstantFolding.run(graph)
