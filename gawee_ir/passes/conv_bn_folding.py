@@ -9,6 +9,7 @@ import torch.nn as nn
 
 from gawee_ir.graph import Graph, Node, Value, DimType
 from gawee_ir.constant.ops import CONV, BATCH_NORM
+from gawee_ir.types.torch_type import *
 
 
 class ConvBNFolding:
@@ -31,24 +32,70 @@ class ConvBNFolding:
 
 
     @staticmethod
-    def _get_conv_mod(conv: Node) -> nn.Module:
+    def _get_conv_mod(conv: Node) -> CONV_TYPE:
         m = conv.attrs.get("mod", None)
-        if isinstance(m, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
+        if isinstance(m, CONV_TYPE):
             return m
         raise Exception(f'[ERROR] m is not conv, m -> {m}')
 
 
     @staticmethod
-    def _get_bn_mod(bn: Node) -> nn.Module:
+    def _get_bn_mod(bn: Node) -> BN_TYPE:
         m = bn.attrs.get("mod", None)
-        if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+        if isinstance(m, BN_TYPE):
             return m
         raise Exception(f'[ERROR] m is not batch, m -> {m}')
 
 
     @classmethod
     def _is_const(cls, bn_mod) -> bool:
-        return not getattr(bn_mod, "training", False)
+        res = not getattr(bn_mod, "training", False)
+        return res 
+
+
+    @classmethod 
+    def _check_and_get_bn_mod(cls, bn: Node) -> BN_TYPE | None:
+        if bn.op_type != BATCH_NORM:
+            return 
+        if len(bn.inputs) != 1 or len(bn.outputs) != 1:
+            return 
+
+        # BN must be eval/inference to be semantics-preserving
+        bn_mod = cls._get_bn_mod(bn)
+        if bn_mod is None:
+            return 
+        if not cls._is_const(bn_mod): 
+            return 
+
+        return bn_mod
+
+
+    @classmethod
+    def _check_and_get_conv_mod(cls, bn: Node) -> CONV_TYPE | None:
+        x = bn.inputs[0]
+        conv = x.producer
+        if conv is None or conv.op_type != CONV:
+            return 
+        conv_mod = cls._get_conv_mod(conv)
+        if conv_mod is None:
+            return 
+        return conv_mod
+
+
+    @classmethod 
+    def _check_dim_condition(cls, bn: Node) -> bool:
+        # True means "valid".
+        xs = cls._shape(bn.inputs[0])
+        ys = cls._shape(bn.outputs[0])
+        if xs is None or ys is None:
+            # allow folding without shapes; still correct in eval
+            return False
+            # pass
+        else:
+            # Conv/BN in ResNet are typically NCHW (len==4) or NCL (len==3)
+            if len(xs) < 3 or len(ys) < 3:
+                return False
+        return True 
 
 
     @classmethod
@@ -56,41 +103,26 @@ class ConvBNFolding:
         changed = False
 
         for bn in list(g.nodes):
-            if bn.op_type != BATCH_NORM:
-                continue
-            if len(bn.inputs) != 1 or len(bn.outputs) != 1:
-                continue
-
-            # BN must be eval/inference to be semantics-preserving
-            bn_mod = cls._get_bn_mod(bn)
+            bn_mod = cls._check_and_get_bn_mod(bn)
             if bn_mod is None:
                 continue
-            if not cls._is_const(bn_mod): 
-                continue
 
-            x = bn.inputs[0]
-            conv = x.producer
-            if conv is None or conv.op_type != CONV:
-                continue
-
-            conv_mod = cls._get_conv_mod(conv)
+            # check whether the predecessor node is conv or not. 
+            conv_mod = cls._check_and_get_conv_mod(bn)
             if conv_mod is None:
                 continue
 
             # Optional conservative shape check (N,C,...) – BN over channels
-            xs = cls._shape(x)
-            ys = cls._shape(bn.outputs[0])
-            if xs is None or ys is None:
-                # allow folding without shapes; still correct in eval
-                pass
-            else:
-                # Conv/BN in ResNet are typically NCHW (len==4) or NCL (len==3)
-                if len(xs) < 3 or len(ys) < 3:
-                    continue
+            if not cls._check_dim_condition(bn):
+                continue
 
             # ---- Extract BN params from module ----
             # gamma/beta are parameters; running_mean/var are buffers.
             # In eval mode they are constant w.r.t. input.
+            print()
+            print(f'bn_mode -> {bn_mod}')
+            print(f'dir -> {dir(bn_mod)}')
+
             assert bn_mod.weight is not None and bn_mod.bias is not None, "BN without affine not supported yet"
             gamma = bn_mod.weight.detach().cpu().numpy().astype(np.float32)          # [C]
             beta  = bn_mod.bias.detach().cpu().numpy().astype(np.float32)            # [C]

@@ -3,15 +3,12 @@ from gawee_ir.analysis.shape import ShapeInference
 from gawee_ir.analysis.cost import CostModel
 
 # passes. 
-from gawee_ir.passes.conv_bn_folding  import ConvBNFolding
-from gawee_ir.passes.constant_folding import *
 from gawee_ir.passes.passer           import Passer
 
 # preliminaries. 
 import torch    
 from torchvision.models import resnet18
 import torch.fx as fx
-import numpy as np
 
 path = './torchdata/resnet18.pt'
 
