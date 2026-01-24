@@ -67,7 +67,7 @@ class ConvAddFolding(Folder):
         changed = False
 
         for add in list(g.nodes):
-            print(f'op types -> {add.op_type}')
+            # print(f'op types -> {add.op_type}')
             if add.op_type != ADD:
                 continue
             if len(add.inputs) != 2 or len(add.outputs) != 1:
@@ -90,6 +90,7 @@ class ConvAddFolding(Folder):
             conv_mod = cls._get_conv_mod(conv)
 
             # need conv output shape to know Cout
+            # to guarantee add is corresponding to shape of conv. 
             if not conv.outputs:
                 continue
             conv_out = conv.outputs[0]
