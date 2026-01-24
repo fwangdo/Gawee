@@ -1,8 +1,9 @@
 '''
 - Opearator fusions. 
-Conv Add Fusion
-Conv Mul Fusion
 Conv BatchNorm Fusion
+Conv Add Fusion
+- hereafter, these passes are not useful for resnet. 
+Conv Mul Fusion
 Relu Clip Fusion
 Reshape Fusion
 
@@ -16,9 +17,11 @@ Dropout Elimination
 from __future__ import annotations
 from typing     import *
 
-from gawee_ir.passes.conv_bn_folding import ConvBNFolding
-from gawee_ir.passes.constant_folding import *
+from gawee_ir.passes.constant_folding import ConstantFolding 
+from gawee_ir.passes.conv_bn_folding  import ConvBNFolding
+from gawee_ir.passes.conv_add_folding import ConvAddFolding 
 from gawee_ir.graph                   import Graph
+
 
 class Passer:
 
@@ -27,4 +30,5 @@ class Passer:
         # fusions. 
         ConstantFolding.run(g)
         ConvBNFolding.run(g)
+        ConvAddFolding.run(g)
         return g 

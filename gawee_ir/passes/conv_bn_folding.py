@@ -10,9 +10,10 @@ import torch.nn as nn
 from gawee_ir.graph import Graph, Node, Value, DimType
 from gawee_ir.constant.ops import CONV, BATCH_NORM
 from gawee_ir.types.torch_type import *
+from gawee_ir.passes.folder  import Folder
 
 
-class ConvBNFolding:
+class ConvBNFolding(Folder):
     """
     Fold:   Conv -> BatchNorm   (in inference/eval mode)
     Into:   Conv' (module weights/bias updated), BN node removed
@@ -22,30 +23,6 @@ class ConvBNFolding:
       - Parameters/buffers are NOT in node.inputs; they live in n.attrs["mod"] (nn.Module).
       - Node.inputs contain only activation Values.
     """
-
-    @staticmethod
-    def _shape(v: Value) -> DimType:
-        s = v.shape
-        if not isinstance(s, list):
-            raise Exception(f'[ERROR]: {s} should be list.')
-        return s
-
-
-    @staticmethod
-    def _get_conv_mod(conv: Node) -> CONV_TYPE:
-        m = conv.attrs.get("mod", None)
-        if isinstance(m, CONV_TYPE):
-            return m
-        raise Exception(f'[ERROR] m is not conv, m -> {m}')
-
-
-    @staticmethod
-    def _get_bn_mod(bn: Node) -> BN_TYPE:
-        m = bn.attrs.get("mod", None)
-        if isinstance(m, BN_TYPE):
-            return m
-        raise Exception(f'[ERROR] m is not batch, m -> {m}')
-
 
     @classmethod
     def _is_const(cls, bn_mod) -> bool:

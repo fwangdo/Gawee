@@ -197,3 +197,10 @@ class Graph:
         for v in self.outputs:
             print(f"  {v}")
         return 
+
+
+    def show_node(self) -> None:
+        print(f'\n\nCurrent Nodes.')
+        for n in self.nodes:
+            print(f'node -> {n.op_type}')
+        return 

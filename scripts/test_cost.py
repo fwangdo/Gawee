@@ -30,3 +30,5 @@ Passer.run(g)
 
 print("\n\n== After ==")
 CostModel.print_report(g)
+
+g.show_node()
