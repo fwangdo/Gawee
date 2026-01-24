@@ -98,42 +98,49 @@ class ConvBNFolding:
         return True 
 
 
+    @classmethod 
+    def _change_conv_weight(cls, conv_mod: CONV_TYPE, Wf, Bf):
+        with torch.no_grad():
+            conv_mod.weight.copy_(torch.from_numpy(Wf).to(device=conv_mod.weight.device, dtype=conv_mod.weight.dtype))
+            if conv_mod.bias is None:
+                # create bias parameter on correct device/dtype
+                conv_mod.bias = torch.nn.Parameter(
+                    torch.from_numpy(Bf).to(device=conv_mod.weight.device, dtype=conv_mod.weight.dtype)
+                )
+            else:
+                conv_mod.bias.copy_(torch.from_numpy(Bf).to(device=conv_mod.bias.device, dtype=conv_mod.bias.dtype))
+        return 
+
     @classmethod
     def run(cls, g: Graph) -> bool:
         changed = False
 
         for bn in list(g.nodes):
+            # checking whether the operation is valid or not. 
             bn_mod = cls._check_and_get_bn_mod(bn)
             if bn_mod is None:
                 continue
-
-            # check whether the predecessor node is conv or not. 
             conv_mod = cls._check_and_get_conv_mod(bn)
             if conv_mod is None:
                 continue
-
-            # Optional conservative shape check (N,C,...) – BN over channels
             if not cls._check_dim_condition(bn):
                 continue
 
             # ---- Extract BN params from module ----
             # gamma/beta are parameters; running_mean/var are buffers.
             # In eval mode they are constant w.r.t. input.
-            print()
-            print(f'bn_mode -> {bn_mod}')
-            print(f'dir -> {dir(bn_mod)}')
-
             assert bn_mod.weight is not None and bn_mod.bias is not None, "BN without affine not supported yet"
-            gamma = bn_mod.weight.detach().cpu().numpy().astype(np.float32)          # [C]
-            beta  = bn_mod.bias.detach().cpu().numpy().astype(np.float32)            # [C]
-            mu    = bn_mod.running_mean.detach().cpu().numpy().astype(np.float32)    # [C]
-            var   = bn_mod.running_var.detach().cpu().numpy().astype(np.float32)     # [C]
+            gamma = bn_mod.weight.detach().cpu().numpy().astype(np.float32)         
+            beta  = bn_mod.bias.detach().cpu().numpy().astype(np.float32)           
+            mu    = bn_mod.running_mean.detach().cpu().numpy().astype(np.float32)    # type: ignore 
+            var   = bn_mod.running_var.detach().cpu().numpy().astype(np.float32)     # type: ignore 
             eps   = float(bn_mod.eps)
 
             # ---- Extract Conv params from module ----
             W = conv_mod.weight.detach().cpu().numpy().astype(np.float32)
             # W shape: [Cout, Cin/groups, K...]
             Cout = int(W.shape[0])
+            # print(f'Cout -> {W.shape}, gamma shape -> {gamma.shape[0]}')
             if gamma.shape[0] != Cout:
                 # Typically BN follows Conv so channels should match. If not, skip.
                 continue
@@ -148,26 +155,17 @@ class ConvBNFolding:
             a = gamma * inv_std                         # [Cout]
 
             # Reshape a to broadcast across weight dims: [Cout, 1, 1, ...]
-            a_w = a.reshape((Cout,) + (1,) * (W.ndim - 1))
-            Wf = W * a_w                                # same shape as W
-
-            Bf = (b0 - mu) * a + beta                   # [Cout]
+            a_w = a.reshape((Cout,) + (1,) * (W.ndim - 1)) # reshape for w', (Cout, 1, 1, 1) 
+            Wf = W * a_w                                # w'  
+            Bf = (b0 - mu) * a + beta                   # b'  
 
             # ---- Write back into Conv module (in-place, no_grad) ----
-            with torch.no_grad():
-                conv_mod.weight.copy_(torch.from_numpy(Wf).to(device=conv_mod.weight.device, dtype=conv_mod.weight.dtype))
-                if conv_mod.bias is None:
-                    # create bias parameter on correct device/dtype
-                    conv_mod.bias = torch.nn.Parameter(
-                        torch.from_numpy(Bf).to(device=conv_mod.weight.device, dtype=conv_mod.weight.dtype)
-                    )
-                else:
-                    conv_mod.bias.copy_(torch.from_numpy(Bf).to(device=conv_mod.bias.device, dtype=conv_mod.bias.dtype))
+            cls._change_conv_weight(conv_mod, Wf, Bf)
 
             # ---- Graph rewrite: bypass BN ----
             # We want all uses of BN output to use Conv output instead.
-            conv_out = x              # conv produces this
             bn_out = bn.outputs[0]
+            conv_out = bn.inputs[0]               # conv produces this
 
             g.replace_all_uses(bn_out, conv_out)
 
