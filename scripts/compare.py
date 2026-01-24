@@ -1,6 +1,6 @@
 # scripts/compare_cost_before_after.py
 
-from gawee_ir.parser import Parser
+from gawee_ir.parser import TorchParser
 from gawee_ir.analysis.shape import ShapeInference
 from gawee_ir.analysis.cost import CostModel
 from gawee_ir.passes.conv_bn_folding import ConvBNFolding

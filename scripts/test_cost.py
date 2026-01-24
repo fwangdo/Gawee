@@ -3,8 +3,9 @@ from gawee_ir.analysis.shape import ShapeInference
 from gawee_ir.analysis.cost import CostModel
 
 # passes. 
-from gawee_ir.passes.conv_bn_folding import ConvBNFolding
+from gawee_ir.passes.conv_bn_folding  import ConvBNFolding
 from gawee_ir.passes.constant_folding import *
+from gawee_ir.passes.passer           import Passer
 
 # preliminaries. 
 import torch    
@@ -28,9 +29,7 @@ print("== Before ==")
 CostModel.init(gm)
 CostModel.print_report(g)
 
-# ConvBNFolding.run(g)
-ConstantFolding.run(g)
-ConvBNFolding.run(g)
+Passer.run(g)
 
 print("\n\n== After ==")
 CostModel.print_report(g)

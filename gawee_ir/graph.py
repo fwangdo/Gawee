@@ -1,4 +1,4 @@
-# gawee_ir/graph.py
+# Definition of Gawee IR. 
 
 from __future__ import annotations
 from typing     import *  
@@ -8,6 +8,7 @@ import torch.fx as fx
 DimType = List[int]
 
 class Value:
+
     def __init__(
         self,
         name: str,
@@ -34,13 +35,14 @@ class Value:
 
 
 class Node:
+
     def __init__(
         self,
         op_type: str,
         inputs: List[Value],
         outputs: List[Value],
         raw_name: str,  
-        raw: fx.Node,
+        raw: fx.Node, # To get information. 
 
         attrs: Dict[str, Any] | None = None,
         name: str | None = None,
@@ -120,10 +122,7 @@ class Graph:
             name = f"const_{len(self.values)}"
 
         base = name
-        i = 0
-        while name in self.values:
-            i += 1
-            name = f"{base}_{i}"
+        name = f"{base}_{len(self.values)}"
 
         v = Value(
             name=name,
@@ -133,6 +132,7 @@ class Graph:
         )
         self.values[v.name] = v
         return v
+
 
     def replace_all_uses(self, old: Value, new: Value) -> None:
         """Replace every use of `old` with `new` (inputs + graph outputs)."""
@@ -183,6 +183,10 @@ class Graph:
         print("=== Graph ===")
         print("[Inputs]")
         for v in self.inputs:
+            print(f"  {v}")
+
+        print("\n[Values]")
+        for v in self.values:
             print(f"  {v}")
 
         print("\n[Nodes]")
