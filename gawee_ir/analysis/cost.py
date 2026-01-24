@@ -188,7 +188,7 @@ class CostModel:
                        per_node)
 
     @classmethod
-    def print_report(cls, g: Graph, topk: int = 20) -> None:
+    def print_report(cls, g: Graph, topk: int = 10) -> None:
         report = cls.run(g)
 
         print("=== Cost Report ===")
