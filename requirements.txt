@@ -5,3 +5,6 @@ onnxruntime
 numpy
 pytest
 onnxscript
+ultralytics
+pandas
+tqdm

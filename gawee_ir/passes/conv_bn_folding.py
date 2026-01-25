@@ -67,7 +67,6 @@ class ConvBNFolding(Folder):
         if xs is None or ys is None:
             # allow folding without shapes; still correct in eval
             return False
-            # pass
         else:
             # Conv/BN in ResNet are typically NCHW (len==4) or NCL (len==3)
             if len(xs) < 3 or len(ys) < 3:
