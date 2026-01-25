@@ -5,6 +5,4 @@ onnxruntime
 numpy
 pytest
 onnxscript
-ultralytics
-pandas
-tqdm
+segmentation-models-pytorch timm
