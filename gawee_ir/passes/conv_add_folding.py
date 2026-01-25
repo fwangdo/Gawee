@@ -57,7 +57,21 @@ class ConvAddFolding(Folder):
         if out_ndim == 4 and a.ndim == 3 and a.shape == (Cout, 1, 1):
             return a.reshape(Cout).astype(np.float32)
 
-        return None
+        return 
+
+
+    @classmethod 
+    def _change_weight(cls, conv_mod: CONV_TYPE, new_bias):
+        with torch.no_grad():
+            if conv_mod.bias is None:
+                conv_mod.bias = torch.nn.Parameter(
+                    torch.from_numpy(new_bias).to(device=conv_mod.weight.device, dtype=conv_mod.weight.dtype)
+                )
+            else:
+                conv_mod.bias.copy_(
+                    torch.from_numpy(new_bias).to(device=conv_mod.bias.device, dtype=conv_mod.bias.dtype)
+                )
+        return 
 
     # ---------------- main pass ----------------
 
@@ -119,15 +133,7 @@ class ConvAddFolding(Folder):
             new_bias = (b0 + bc).astype(np.float32)
 
             # Write back into conv module (in-place)
-            with torch.no_grad():
-                if conv_mod.bias is None:
-                    conv_mod.bias = torch.nn.Parameter(
-                        torch.from_numpy(new_bias).to(device=conv_mod.weight.device, dtype=conv_mod.weight.dtype)
-                    )
-                else:
-                    conv_mod.bias.copy_(
-                        torch.from_numpy(new_bias).to(device=conv_mod.bias.device, dtype=conv_mod.bias.dtype)
-                    )
+            cls._change_weight(conv_mod, new_bias)
 
             # Graph rewrite: replace uses of Add output with Conv output
             add_out = add.outputs[0]
