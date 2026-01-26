@@ -27,6 +27,8 @@ class Passer:
 
     @classmethod
     def run(cls, g: Graph) -> Graph: 
+        # elimination. 
+
         # fusions. 
         ConstantFolding.run(g)
         ConvBNFolding.run(g)
