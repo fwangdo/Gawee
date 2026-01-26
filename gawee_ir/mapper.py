@@ -52,19 +52,38 @@ class Mapper:
 
 
     @classmethod 
-    def _parse_primitive(cls, mod) -> str:
-        mod = mod.__name__
+    def _parse_primitive(cls, mod, node: fx.Node) -> str:
+        """
+        Extract the name of function used in CALL_FUNCTION in fx.
 
-        if mod == "add":
+        Args:
+            mod: module wrapped in torch.
+            node: fx Node for debugging
+        Return:
+            the name of function 
+        """
+        mod_name = mod.__name__
+
+        if mod_name == "add":
             return ADD  
-        elif mod == "sub": 
+        elif mod_name == "sub": 
             return SUB
-        elif mod == "mul":
+        elif mod_name == "mul":
             return MUL
-        elif mod == "flatten":
+        elif mod_name == "flatten":
             return FLATTEN
+        
+        # added for unet. TODO: we need to consider parts below.  
+        elif mod_name == "getattr":
+            return GETATTR
+        elif mod_name == "getitem": 
+            return GETITEM
+        elif mod_name == "interpolate":
+            return INTERPOLATE
+        elif mod_name == "cat":
+            return CAT
 
-        raise Exception(f'[ERROR] {mod} is not supported')
+        raise Exception(f'[ERROR] {mod} is not supported, name -> {mod_name}')
 
 
     @classmethod
@@ -84,16 +103,18 @@ class Mapper:
             return MAXPOOL
         if isinstance(mod, (nn.AvgPool1d, nn.AvgPool2d, nn.AvgPool3d, nn.AdaptiveAvgPool1d, nn.AdaptiveAvgPool2d, nn.AdaptiveAvgPool3d)):
             return AVGPOOL
+        if isinstance(mod, (nn.Identity)):
+            return IDENTITY 
 
         raise Exception(f'[ERROR]: {mod} is not defined yet in parse_module')
 
 
     @classmethod 
-    def _refine_op(cls, op: str, n) -> str: 
+    def _refine_op(cls, op: str, n, node: fx.Node) -> str: 
         if op == CALL_MODULE:
             res = cls._parse_module_name(n) 
         elif op == CALL_FUNCTION: 
-            res = cls._parse_primitive(n)
+            res = cls._parse_primitive(n, node) # node for debugging. 
         elif op == CALL_METHOD:
             raise Exception(f'[ERROR]: {n} is called by call method')
         else:
@@ -116,7 +137,7 @@ class Mapper:
         else:
             raise Exception(f'{node.op} is not supported yet')
 
-        res = cls._refine_op(node.op, temp)
+        res = cls._refine_op(node.op, temp, node)
         return res 
 
 

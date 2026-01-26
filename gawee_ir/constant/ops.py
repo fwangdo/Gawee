@@ -18,6 +18,7 @@ TRANS      = "Transpose"
 MAXPOOL    = "MaxPool"
 AVGPOOL    = "AvgPool"
 REDUCE_MEAN = "ReduceMean"
+IDENTITY    = "Identity"
 
 # FX layouts. 
 PLACEHOLDER = "placeholder"
@@ -30,3 +31,9 @@ OUTPUT = "output"
 
 # operators. 
 FLATTEN = "flatten"
+
+# operators for call function 
+GETATTR = "getattr"
+GETITEM = "getitem"
+INTERPOLATE = "interpolate"
+CAT         = "cat"

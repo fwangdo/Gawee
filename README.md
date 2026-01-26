@@ -25,11 +25,13 @@ PyTorch (ResNet)
 
 ## 대상 모델
 
-- **ResNet-18 (최소 구성)**
+- **ResNet-18**
   - ImageNet용 표준 ResNet-18 구조를 기반으로 함
-  - 목적은 모델 정확도가 아니라 **그래프 구조와 연산 패턴**
-  - Conv / BatchNorm / ReLU / Residual connection 등
-    그래프 최적화 논의에 충분한 연산을 포함
+  - Conv / BatchNorm을 fusion하여 그래프 노드를 줄이는 것을 목표로 함.
+
+- **Unet**
+  - ImageNet용 표준 Unet 구조를 기반으로 함
+  - 중복되는 Identity 함수를 제거하고, 제거가능한 파이썬 연산(e.g., getitem, getattr)들을 최대한 제거하는 것을 목표로 함. 
 
 ---
 
@@ -54,10 +56,12 @@ IR 설계의 주요 관심사:
   - op type
   - input / output
   - attributes
+  - fx Node 
 - Value
   - shape
   - dtype
   - producer / consumers
+  - data(only for constant)
 
 ---
 
@@ -88,8 +92,7 @@ IR 설계의 주요 관심사:
 - 불필요한 reshape / transpose 제거 또는 정규화
 - 그래프 단순화(canonicalization)
 
-각 최적화는 onnx basic graph optimizations 를 기초로 한다:
-
+각 최적화는 onnx basic graph optimizations 를 기초로 함:
 - https://onnxruntime.ai/docs/performance/model-optimizations/graph-optimizations.html#basic-graph-optimizations
 
 ---
@@ -109,7 +112,6 @@ IR 설계의 주요 관심사:
 최적화 효과는 다음 두 지표로 평가한다.
 
 1. **FLOPs 비교**
-   - 이론적 연산량 감소 확인
 2. **Runtime 비교**
 
 이를 통해:
@@ -123,22 +125,25 @@ IR 설계의 주요 관심사:
 
 - 딥러닝 컴파일러 프론트엔드가 해결하는 **실제 문제의 구조**
 - IR 설계가 분석과 최적화에 미치는 영향
-- 그래프 최적화가 단순한 트릭이 아니라  
-  **전제 조건과 정합성 판단이 필요한 컴파일러 문제**임을 이해하고 있음을 증명
+- Graph rewrite를 통해 뉴럴 네트워크에 대한 유의미한 연산 감소를 보임
 
 ---
 
 ## 파이프라인
 
+# 프론트엔드 
 - torch fx 그래프를 Gawee ir로 파싱
-- Gawee ir에서 최적화 수행
+- 사전 정의된 cost를 기반으로 베이스라인의 cost 측정
+- Gawee ir에서 정의된 pass를 기반으로 최적화 수행
 - ir을 json 형태로 저장
+
+# 미들엔드
 - mlir 기반 수행 기능 정의(TODO)
 
 ---
 
 ## 참고
 
-- PyTorch ONNX Export 문서
+- PyTorch fx 문서
 - ONNX 공식 스펙
 - TVM 아키텍처 문서

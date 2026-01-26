@@ -1,0 +1,1 @@
+python3 ./scripts/show_cost.py --model=resnet18 --weight=./torchdata/resnet18.pt

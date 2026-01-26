@@ -32,3 +32,6 @@ class Passer:
         ConvBNFolding.run(g)
         ConvAddFolding.run(g)
         return g 
+
+
+# note that, we can eliminate python operations(e.g., getattr, getitem). Consider how to delete them. 

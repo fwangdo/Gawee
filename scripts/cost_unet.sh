@@ -1,0 +1,1 @@
+python3 ./scripts/show_cost.py --model=unet --weight=./torchdata/unet.pt 
