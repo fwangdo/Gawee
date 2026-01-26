@@ -147,3 +147,10 @@ IR 설계의 주요 관심사:
 - PyTorch fx 문서
 - ONNX 공식 스펙
 - TVM 아키텍처 문서
+
+---
+
+## 사용 방법 및 실험 결과
+
+- [실행 방법 (Usage)](docs/usage.md)
+- [구현된 최적화 패스 설명](docs/arch.md)
