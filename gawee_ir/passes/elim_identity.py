@@ -53,6 +53,7 @@ class IdentityElimination(Folder):
             # Remove Identity node
             g.remove_node(n)
 
+            cls.deleted_node += 1
             changed = True
 
         return changed

@@ -86,8 +86,11 @@ def main():
     Passer.run(g)
 
     # 7) Cost after optimization
-    print("\n== After ==")
+    print("\n\n== After ==")
     CostModel.print_report(g)
+
+    print('\n==Optimization information==')
+    Passer.show_opt_result()
 
 
 if __name__ == "__main__":

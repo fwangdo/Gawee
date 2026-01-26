@@ -145,6 +145,10 @@ class ConvAddFolding(Folder):
 
             # Remove Add node
             g.remove_node(add)
+
+            # check
+            cls.deleted_node += 1
+
             changed = True
 
         return changed

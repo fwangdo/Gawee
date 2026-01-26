@@ -29,6 +29,23 @@ from gawee_ir.graph                   import Graph
 
 class Passer:
 
+    result: Dict[str, int] = dict()
+
+    @classmethod 
+    def _record_pass_result(cls) -> None:
+        cls.result[IdentityElimination.__name__] = IdentityElimination.deleted_node
+        cls.result[ConvBNFolding.__name__] = ConvBNFolding.deleted_node
+        cls.result[ConvAddFolding.__name__] = ConvAddFolding.deleted_node
+        return 
+
+
+    @classmethod 
+    def show_opt_result(cls) -> None:
+        for opt, nodes in cls.result.items():
+            print(f'{opt} -> {nodes}')
+        return 
+
+
     @classmethod
     def run(cls, g: Graph) -> Graph: 
         # elimination. 
@@ -38,6 +55,8 @@ class Passer:
         ConstantFolding.run(g)
         ConvBNFolding.run(g)
         ConvAddFolding.run(g)
+
+        cls._record_pass_result()
         return g 
 
 

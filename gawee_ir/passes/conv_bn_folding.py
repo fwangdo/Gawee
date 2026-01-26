@@ -150,6 +150,10 @@ class ConvBNFolding(Folder):
                 conv_out.consumers.remove(bn)
 
             g.remove_node(bn)
+            
+            # check
+            cls.deleted_node += 1
+
             changed = True
 
         return changed

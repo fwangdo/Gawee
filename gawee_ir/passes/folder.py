@@ -14,6 +14,7 @@ class Folder:
     """
     Common methods for passes. 
     """
+    deleted_node: int = 0
 
     # ---------------- helpers ----------------
 

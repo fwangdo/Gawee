@@ -203,16 +203,16 @@ class CostModel:
         )
 
         # top-k by flops
-        nodes = [r for r in report.per_node if r.flops is not None]
-        nodes.sort(key=lambda r: r.flops, reverse=True) # type: ignore 
+        # nodes = [r for r in report.per_node if r.flops is not None]
+        # nodes.sort(key=lambda r: r.flops, reverse=True) # type: ignore 
 
-        print(f"\n[Top {min(topk, len(nodes))} nodes by FLOPs]")
-        for r in nodes[:topk]:
-            nm = r.name if r.name else "-"
-            print(
-                f"  ({r.index:4d}) {r.op_type:<20} name={nm:<20} "
-                f"flops={r.flops:<12} read={r.bytes_read} write={r.bytes_write}"
-            )
+        # print(f"\n[Top {min(topk, len(nodes))} nodes by FLOPs]")
+        # for r in nodes[:topk]:
+        #     nm = r.name if r.name else "-"
+        #     print(
+        #         f"  ({r.index:4d}) {r.op_type:<20} name={nm:<20} "
+        #         f"flops={r.flops:<12} read={r.bytes_read} write={r.bytes_write}"
+        #     )
 
     # helper functions. 
     @staticmethod
