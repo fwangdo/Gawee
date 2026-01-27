@@ -22,6 +22,7 @@ from gawee_ir.passes.constant_folding import ConstantFolding
 from gawee_ir.passes.conv_bn_folding  import ConvBNFolding
 from gawee_ir.passes.conv_add_folding import ConvAddFolding 
 from gawee_ir.passes.elim_identity    import IdentityElimination
+from gawee_ir.passes.canonicalize     import PythonOpElimination
 
 # ir. 
 from gawee_ir.graph                   import Graph
@@ -48,6 +49,9 @@ class Passer:
 
     @classmethod
     def run(cls, g: Graph) -> Graph: 
+        # canonicalization. Delete python operations which can be represented as a graph.(e.g., getitem, getattr.)
+        PythonOpElimination.run(g)
+
         # elimination. 
         IdentityElimination.run(g) 
 

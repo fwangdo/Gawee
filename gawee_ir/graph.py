@@ -66,7 +66,8 @@ class Node:
         out_names = [v.name for v in self.outputs]
         return (
             f"Node(op_type={self.op_type}, "
-            f"inputs={in_names}, outputs={out_names})"
+            f"inputs={in_names}, outputs={out_names}, "
+            f"raw={in_names})"
         )
 
 

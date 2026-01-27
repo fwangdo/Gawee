@@ -37,3 +37,6 @@ GETATTR = "getattr"
 GETITEM = "getitem"
 INTERPOLATE = "interpolate"
 CAT         = "cat"
+
+SHAPE = "shape"
+DTYPE = "dtype"

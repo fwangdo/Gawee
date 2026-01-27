@@ -185,7 +185,7 @@ class TorchParser:
         # print(f'buffers -> {list(buffers.keys())} ') # var, mean, etc..  
 
         for name, t in {**params, **buffers}.items():
-            arr = t.detach().cpu().numpy()
+            arr: np.ndarray = t.detach().cpu().numpy()
             v = cls.g.get_value(
                 name=name,
                 shape=list(arr.shape),
