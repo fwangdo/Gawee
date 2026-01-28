@@ -41,10 +41,11 @@ class Passer:
         return 
 
 
-    @classmethod 
+    @classmethod
     def show_opt_result(cls) -> None:
-        for opt, nodes in cls.result.items():
-            print(f'{opt} -> {nodes}')
+        for name, cnt in cls.result.items():
+            print(f"  - {name:<25} : {cnt:>5}")
+        print()
         return 
 
 
@@ -63,6 +64,3 @@ class Passer:
 
         cls._record_pass_result()
         return g 
-
-
-# note that, we can eliminate python operations(e.g., getattr, getitem). Consider how to delete them. 
