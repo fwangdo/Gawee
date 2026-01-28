@@ -5,24 +5,6 @@
 
 ---
 
-## 프로젝트 목표
-
-- PyTorch 모델을 **정적 계산 그래프**로 변환하는 프론트엔드 파이프라인 이해
-- 그래프 레벨 최적화의 원리와 정합성(soundness) 이해 및 구현
-- 최적화 전/후 그래프의 **FLOPs 및 메모리 접근 연산 비교를 통한 효과 검증**
-
----
-
-## 전체 파이프라인
-
-PyTorch (ResNet)
-→ gawee IR 변환
-→ 그래프 분석
-→ 그래프 최적화
-→ 최적화 전/후 비교
-
----
-
 ## 대상 모델
 
 - **ResNet-18**
@@ -67,7 +49,7 @@ IR 설계의 주요 관심사:
 
 ### 2. 그래프 분석
 
-최적화를 위해 다음과 같은 분석을 수행한다.
+최적화를 위해 다음과 같은 분석을 수행.
 
 - Shape inference
 - Constant propagation
@@ -88,44 +70,12 @@ IR 설계의 주요 관심사:
   - 상수 서브그래프를 컴파일 타임에 계산
 - Operator Fusion
   - 연속된 연산 패턴을 하나의 fused operator로 결합
-  - 예: Conv + BatchNorm + ReLU
-- 불필요한 reshape / transpose 제거 또는 정규화
-- 그래프 단순화(canonicalization)
+  - 예: Conv + BatchNorm, Conv + Add 
+- fx에 존재하는 파이썬 연산 제거
+- 기타 그래프 단순화(canonicalization)
 
-각 최적화는 onnx basic graph optimizations 를 기초로 함:
+각 최적화는 onnx basic graph optimizations를 참조.
 - https://onnxruntime.ai/docs/performance/model-optimizations/graph-optimizations.html#basic-graph-optimizations
-
----
-
-### 4. 정합성 검증
-
-최적화는 반드시 의미 보존이어야 하므로,  
-최적화 전/후 그래프에 대해 다음을 검증한다.
-
-- shape 일치 여부 확인
-- dtype 일치 여부 확인
-
----
-
-### 5. 성능 비교
-
-최적화 효과는 다음 두 지표로 평가한다.
-
-1. **FLOPs 비교**
-2. **Runtime 비교**
-
-이를 통해:
-- “왜 이 최적화가 효과적인가”
-- “어떤 비용이 줄어들었는가”
-를 정량적으로 설명하는 것을 목표로 한다.
-
----
-
-## 이 프로젝트가 보여주고자 하는 것
-
-- 딥러닝 컴파일러 프론트엔드가 해결하는 **실제 문제의 구조**
-- IR 설계가 분석과 최적화에 미치는 영향
-- Graph rewrite를 통해 뉴럴 네트워크에 대한 유의미한 연산 감소를 보임
 
 ---
 
