@@ -66,10 +66,30 @@ sh ./scripts/show_resnet.sh
 ```
 
 ```text
+model_name -> resnet18, weight_path -> ./torchdata/resnet18.pt
 == Before ==
-...
+=== Cost Report ===
+Nodes: 69
+Total FLOPs (known only): 3628899328
+Total Read  (known only): 37234688 bytes
+Total Write (known only): 32923552 bytes
+Coverage: flops=29/69, read=69/69, write=69/69
+
+
 == After ==
-...
+=== Cost Report ===
+Nodes: 49
+Total FLOPs (known only): 3628899328
+Total Read  (known only): 27299840 bytes
+Total Write (known only): 22988704 bytes
+Coverage: flops=29/49, read=49/49, write=49/49
+
+
+== Optimization information ==
+  - IdentityElimination       :     0
+  - ConvBNFolding             :    20
+  - ConvAddFolding            :     0
+  - PythonOpElimination       :     0
 ```
 
 ---
@@ -87,8 +107,28 @@ UNet의 경우:
 * Conv–BatchNorm folding
 
 ```text
+model_name -> unet, weight_path -> ./torchdata/unet.pt
 == Before ==
-...
+=== Cost Report ===
+Nodes: 196
+Total FLOPs (known only): 11966549504
+Total Read  (known only): 136579072 bytes
+Total Write (known only): 116006912 bytes
+Coverage: flops=63/196, read=169/196, write=169/196
+
+
 == After ==
-...
+=== Cost Report ===
+Nodes: 116
+Total FLOPs (known only): 11966549504
+Total Read  (known only): 94933072 bytes
+Total Write (known only): 83693568 bytes
+Coverage: flops=63/116, read=116/116, write=116/116
+
+
+== Optimization information ==
+  - IdentityElimination       :    12
+  - ConvBNFolding             :    46
+  - ConvAddFolding            :     0
+  - PythonOpElimination       :    22
 ```
