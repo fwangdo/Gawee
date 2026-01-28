@@ -37,6 +37,7 @@ class Passer:
         cls.result[IdentityElimination.__name__] = IdentityElimination.deleted_node
         cls.result[ConvBNFolding.__name__] = ConvBNFolding.deleted_node
         cls.result[ConvAddFolding.__name__] = ConvAddFolding.deleted_node
+        cls.result[PythonOpElimination.__name__] = PythonOpElimination.deleted_node
         return 
 
 

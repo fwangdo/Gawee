@@ -124,16 +124,10 @@ class TorchParser:
         mod = cls._parse_call_name(node) 
         op_type = Mapper.translate(node, cls.gm)
 
-        # will be added. but not now.
-        # axes = cls._extract_axes(node)
-        # keepdims = cls._extract_keepdims(node)
-
         attrs = {
             "target": node.target, # dl opearation. 
             "op": node.op,
             "mod": mod,
-            # "axes": axes, 
-            # "keepdims": keepdims, 
         }
 
         n = Node(

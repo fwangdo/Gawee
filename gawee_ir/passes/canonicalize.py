@@ -182,7 +182,6 @@ class PythonOpElimination(Folder):
             changed = False
 
             for n in list(g.nodes):
-                print(f'{n}')
                 if not n.outputs:
                     continue
 
@@ -204,11 +203,14 @@ class PythonOpElimination(Folder):
                 g.replace_all_uses(old_out, const_v)
 
                 # Detach node cleanly (Graph.remove_node already fixes consumers/producers)
+                # Dead code elimination automatically. 
                 g.remove_node(n)
+                cls.deleted_node += 1
 
                 changed = True
                 changed_any = True
 
+            # until there is nothing to delete. 
             if not changed:
                 break
 

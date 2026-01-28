@@ -89,7 +89,7 @@ def main():
     print("\n\n== After ==")
     CostModel.print_report(g)
 
-    print('\n==Optimization information==')
+    print('\n\n== Optimization information ==')
     Passer.show_opt_result()
 
 
