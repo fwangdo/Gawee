@@ -40,15 +40,11 @@ class PythonOpElimination(Folder):
 
 
     @staticmethod
-    def _as_numpy_const(x: Any) -> np.ndarray | None:
+    def _as_numpy_const(x) -> np.ndarray:
         """
         Convert a resolved python object to np.ndarray.
         Returns None if conversion is not supported.
         """
-        # torch.Size -> tuple[int, ...]
-        if isinstance(x, torch.Size):
-            x = tuple(int(d) for d in x)
-
         if isinstance(x, np.ndarray):
             return x
 
@@ -61,7 +57,8 @@ class PythonOpElimination(Folder):
         if isinstance(x, (np.bool_, bool)):
             return np.array(bool(x), dtype=np.bool_)
 
-        if isinstance(x, (list, tuple)):
+        # if isinstance(x, (list, tuple)):
+        if isinstance(x, list):
             # best-effort: vector of ints/floats/bools
             if all(isinstance(d, (np.integer, int)) for d in x):
                 return np.array([int(d) for d in x], dtype=np.int64)
@@ -71,13 +68,14 @@ class PythonOpElimination(Folder):
                 return np.array([bool(d) for d in x], dtype=np.bool_)
 
             # mixed types -> not supported
-            return None
+            raise Exception(f'[ERROR]: {x[0]} is in {type(x[0])}')
 
         # strings / objects are not supported as constants in this IR
-        return None
+        raise Exception(f'[ERROR]: x -> {x}, type -> {type(x)}')
+        # return None
 
     @classmethod
-    def _resolve_getattr(cls, node: Node) -> Any | DimType | None:
+    def _resolve_getattr(cls, node: Node) -> DimType | str:
         """
         Try to resolve getattr into a python value.
 
@@ -86,84 +84,90 @@ class PythonOpElimination(Folder):
           - x.dtype  (from IR Value.dtype)
         and also getattr on already-constant numpy values.
         """
-        print(f'GETATTR Node -> {node}')
+        # print(f'GETATTR Node -> {node}')
         if not node.inputs or not node.outputs:
-            return None
+            raise Exception(f'[ERROR]: inputs -> {node.inputs}, outputs -> {node.outputs}')
 
         out = node.outputs[0]
-        if not cls._is_non_tensor_value(out):
-            # getattr returning a tensor should not be eliminated here
-            return None
+        if not cls._is_non_tensor_value(out): # the shape is None. 
+            raise Exception(f'[ERROR] {out} shapse is None.') 
 
         raw = node.raw
         # FX: call_function(getattr, args=(obj, "shape", ...))
         if len(raw.args) < 2:
-            return None
-        print(f'args -> {raw.args}')        
+            raise Exception(f'[ERROR]: {raw.args} should consist of data and attribute.')
 
         base_v = node.inputs[0]
         attr = raw.args[1]
         if not isinstance(attr, str):
-            return # we only consider shape and dtype.  
+            raise Exception(f'[ERROR]: attribute should be in string. attr -> {attr} / {type(attr)}')
 
         # 1) common: tensor Value -> shape/dtype from analysis
-        if attr == "shape":
+        if attr == SHAPE:
             if isinstance(base_v.shape, list):
                 return list(int(d) for d in base_v.shape) # dim type 
-            raise E(SHAPE, base_v.shape) 
-
-        if attr == "dtype":
+            raise PythonOpError(SHAPE, base_v.shape) 
+        elif attr == DTYPE:
             if base_v.dtype is not None:
                 return base_v.dtype
-            if base_v.data is not None:
-                return str(base_v.data.dtype)
+            raise PythonOpError(DTYPE, base_v.dtype)
 
-        # 2) fallback: getattr on constant numpy
-        if base_v.data is not None:
-            try:
-                return getattr(base_v.data, attr)
-            except Exception:
-                return 
+        raise Exception(f'[ERROR]: {attr} is not defined yet. ')
 
-        return 
 
     @classmethod
     def _resolve_getitem(cls, node: Node) -> Any | None:
         """
         Try to resolve getitem into a python value.
+        This funstion supports constant value only. 
 
         Supports indexing into:
           - numpy arrays (base_v.data)
           - 1D const vectors created by this pass (also base_v.data)
         """
-        print(f'GETITEM Node -> {node}')
         if not node.inputs or not node.outputs:
-            return None
+            raise Exception(f'[ERROR]: inputs -> {node.inputs}, outputs -> {node.outputs}')
 
         out = node.outputs[0]
         if not cls._is_non_tensor_value(out):
-            # getitem returning a tensor is a real op (do not eliminate)
-            return None
+            raise Exception(f'[ERROR] {out} shapse is None.') 
 
         raw = node.raw
         # FX: call_function(operator.getitem, args=(obj, idx))
         if len(raw.args) < 2:
-            return None
+            raise Exception(f'[ERROR]: {raw.args} should consist of data and attribute.')
 
         base_v = node.inputs[0]
         idx = raw.args[1]
 
         # We only resolve when base is already a numpy constant in IR
         if base_v.data is None:
-            return None
+            return # it cannot be expressed now.  
 
         base_obj = base_v.data
+        # print(f'node -> {node} base -> {base_v}, data -> {base_v.data}, idx -> {idx}')
 
         try:
             # idx can be int / slice / tuple of slices (rare)
             return base_obj[idx]  # type: ignore[index]
-        except Exception:
-            return None
+        except Exception as e:
+            raise Exception(f'[ERROR]: {e}') 
+
+
+    @classmethod  
+    def _substitute(cls, n: Node) -> DimType | str | None: 
+        op = n.op_type
+
+        if op == GETATTR:
+            res = cls._resolve_getattr(n)
+            # print(f'res of getattr -> {res}, type -> {type(res)}')
+        elif op == GETITEM:
+            res = cls._resolve_getitem(n)
+        else:
+            return 
+
+        return res 
+
 
     @classmethod
     def run(cls, g: Graph) -> bool:
@@ -178,28 +182,18 @@ class PythonOpElimination(Folder):
             changed = False
 
             for n in list(g.nodes):
+                print(f'{n}')
                 if not n.outputs:
                     continue
 
-                op = n.op_type
-
-                resolved: Any | None = None
-                if op == GETATTR:
-                    resolved = cls._resolve_getattr(n)
-                elif op == GETITEM:
-                    resolved = cls._resolve_getitem(n)
-                elif op == INTERPOLATE: 
-                    continue # TODO 
-                elif op == CAT:
-                    continue # TODO 
-                else:
-                    continue
+                resolved = cls._substitute(n)
 
                 if resolved is None:
                     continue
 
                 arr = cls._as_numpy_const(resolved)
                 if arr is None:
+                    # print(f'[LOG]: arr is None case. ')
                     # Cannot materialize as numeric const in this IR
                     continue
 

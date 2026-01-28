@@ -73,14 +73,14 @@ class Mapper:
         elif mod_name == "flatten":
             return FLATTEN
         
-        # added for unet. TODO: we need to consider parts below.  
+        # added for unet. 
         elif mod_name == "getattr":
             return GETATTR
         elif mod_name == "getitem": 
             return GETITEM
         elif mod_name == "interpolate":
             return INTERPOLATE
-        elif mod_name == "cat":
+        elif mod_name == "cat": # concatenate
             return CAT
 
         raise Exception(f'[ERROR] {mod} is not supported, name -> {mod_name}')

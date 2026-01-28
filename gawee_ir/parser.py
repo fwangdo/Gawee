@@ -144,6 +144,7 @@ class TorchParser:
             raw = node, 
             attrs=attrs,
             name=node.name,
+            call_type=node.op,
         )
         cls.g.add_node(n)
         cls.env[node.name] = out

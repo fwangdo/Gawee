@@ -1,9 +1,10 @@
 # Definition of Gawee IR. 
 
-from __future__ import annotations
-from typing     import *  
-import numpy as np 
-import torch.fx as fx 
+from __future__            import annotations
+from typing                import *  
+import numpy               as np 
+import torch.fx            as fx 
+from gawee_ir.constant.ops import *
 
 DimType = List[int]
 
@@ -50,6 +51,7 @@ class Node:
 
         attrs: Dict[str, Any] | None = None,
         name: str | None = None,
+        call_type: str | None = None, 
     ):
         self.op_type = op_type # operator type.
         self.inputs = inputs
@@ -59,6 +61,7 @@ class Node:
 
         self.attrs: Dict[str, Any] = attrs if attrs is not None else {}
         self.name = name
+        self.call_type = call_type
 
         for v in self.inputs:
             v.consumers.append(self)
@@ -73,6 +76,9 @@ class Node:
             f"inputs={in_names}, outputs={out_names}, "
             f"raw={in_names})"
         )
+
+    def is_call_function(self) -> bool:
+        return self.call_type == CALL_FUNCTION 
 
     def to_json(self):
         # TODO 
