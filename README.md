@@ -13,7 +13,7 @@
 - **Unet**
   - ImageNet용 표준 Unet 구조를 기반으로 함. 
   - 중복되는 Identity 함수를 제거하고, 제거가능한 파이썬 연산(e.g., getitem, getattr)들을 최대한 제거하는 것을 목표로 함. 
-
+- [실행 및 평가 방법](docs/usage.md)
 ---
 
 ## 프로젝트에서 다루는 핵심 개념
@@ -22,27 +22,11 @@
 
 **그래프 분석과 최적화를 위해 필요한 정보만을 명시적으로 표현하는 자체 IR**를 정의.
 
-IR 설계의 주요 관심사:
-
 - 연산 노드와 데이터 흐름의 명확한 분리
 - shape / dtype / layout / data 정보의 명시적 표현
-- 그래프 순회 및 rewrite가 용이한 구조
-
-예시 개념 구조:
-
-- Graph
-  - Nodes (연산)
-  - Values (텐서)
-- Node
-  - op type
-  - input / output
-  - attributes
-  - fx Node 
-- Value
-  - shape
-  - dtype
-  - producer / consumers
-  - data(only for constant)
+- Graph: Nodes (연산) / Values (텐서)
+- Node: op type / input / output / attributes / fx Node 
+- Value: shape / dtype / producer / consumers / data(only for constant)
 
 ---
 
@@ -70,10 +54,7 @@ IR 설계의 주요 관심사:
   - 연속된 연산 패턴을 하나의 fused operator로 결합
   - 예: Conv + BatchNorm, Conv + Add 
 - fx에 존재하는 파이썬 연산 제거
-- 기타 그래프 단순화(canonicalization)
-
-각 최적화는 onnx basic graph optimizations를 참조.
-- https://onnxruntime.ai/docs/performance/model-optimizations/graph-optimizations.html#basic-graph-optimizations
+- [구현된 최적화 패스 설명](docs/arch.md)
 
 ---
 
@@ -95,10 +76,3 @@ IR 설계의 주요 관심사:
 - PyTorch fx 문서
 - ONNX 공식 스펙
 - TVM 아키텍처 문서
-
----
-
-## 사용 방법 및 실험 결과
-
-- [실행 및 평가 방법](docs/usage.md)
-- [구현된 최적화 패스 설명](docs/arch.md)
