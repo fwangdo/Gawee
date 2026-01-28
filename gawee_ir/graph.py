@@ -33,6 +33,10 @@ class Value:
         const = " const" if self.is_const() else ""
         return f"Value(name={self.name}, shape={shape}, dtype={dtype}){const}"
 
+    def to_json(self):
+        # TODO 
+        return 
+
 
 class Node:
 
@@ -69,6 +73,10 @@ class Node:
             f"inputs={in_names}, outputs={out_names}, "
             f"raw={in_names})"
         )
+
+    def to_json(self):
+        # TODO 
+        return 
 
 
 class Graph:
@@ -159,6 +167,10 @@ class Graph:
                 self.outputs[i] = new
 
         return
+
+    def to_json(self):
+        # TODO 
+        return 
 
     # ---- Query utilities ----
 
