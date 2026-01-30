@@ -31,9 +31,22 @@ class ShapeInference:
             cls._infer_reshape(n)
         elif op == TRANS:
             cls._infer_transpose(n)
+        elif op in { MAXPOOL, AVGPOOL }:
+            pass
+        elif op == FLATTEN:
+            pass
+        elif op in { GETATTR, GETITEM }:
+            pass
+        elif op == CAT:
+            pass
+        elif op == INTERPOLATE:
+            pass
         else:
             # unknown op: do not crash, leave shapes as-is
+            print(f'op type -> {op}')
             pass
+
+        return 
 
     # ---------------- helpers ----------------
 
