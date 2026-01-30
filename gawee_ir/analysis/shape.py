@@ -3,6 +3,7 @@ from typing     import *
 
 from gawee_ir.graph import * 
 from gawee_ir.constant.ops import *
+import math
 
 
 class ShapeInference:
@@ -32,15 +33,15 @@ class ShapeInference:
         elif op == TRANS:
             cls._infer_transpose(n)
         elif op in { MAXPOOL, AVGPOOL }:
-            pass
+            cls._infer_pool(n)
         elif op == FLATTEN:
-            pass
-        elif op in { GETATTR, GETITEM }:
-            pass
+            cls._infer_flatten(n)
         elif op == CAT:
-            pass
+            cls._infer_cat(n)
         elif op == INTERPOLATE:
-            pass
+            cls._infer_interpolate(n)
+        elif op in { GETATTR, GETITEM }:
+            pass #? 
         else:
             # unknown op: do not crash, leave shapes as-is
             print(f'op type -> {op}')
@@ -142,4 +143,76 @@ class ShapeInference:
         out_shape = [x.shape[i] for i in perm]
         for out in n.outputs:
             out.shape = out_shape
+        return 
+
+    
+    @staticmethod
+    def _infer_pool(n: Node) -> None:
+        """
+        NCHW 2D pooling.
+        attrs (typical):
+          - kernel_shape: [Kh, Kw]   (required)
+          - strides: [sh, sw]        (default [1,1])
+          - pads: [pt, pl, pb, pr]   (default [0,0,0,0])
+          - dilations: [dh, dw]      (default [1,1])  (rare but possible)
+          - ceil_mode: 0/1           (default 0)
+        """
+        # error handling. 
+        if not n.inputs:
+            return
+        x = n.inputs[0]
+        if x.shape is None or len(x.shape) != 4:
+            return
+
+        kernel = n.attrs.get("kernel_shape")
+        if kernel is None or len(kernel) != 2:
+            return
+        Kh, Kw = kernel
+
+        strides = n.attrs.get("strides", [1, 1])
+        pads = n.attrs.get("pads", [0, 0, 0, 0])
+        dilations = n.attrs.get("dilations", [1, 1])
+        ceil_mode = n.attrs.get("ceil_mode", 0)
+
+        if len(strides) != 2 or len(pads) != 4 or len(dilations) != 2:
+            return
+
+        N, C, H, W = x.shape
+        sh, sw = strides
+        pt, pl, pb, pr = pads
+        dh, dw = dilations
+
+        eff_kh = (Kh - 1) * dh + 1
+        eff_kw = (Kw - 1) * dw + 1
+
+        num_h = H + pt + pb - eff_kh
+        num_w = W + pl + pr - eff_kw
+
+        if sh <= 0 or sw <= 0:
+            return
+
+        if ceil_mode:
+            Hout = math.floor((num_h + sh - 1) / sh) + 1  # ceil division
+            Wout = math.floor((num_w + sw - 1) / sw) + 1
+        else:
+            Hout = math.floor(num_h / sh) + 1
+            Wout = math.floor(num_w / sw) + 1
+
+        for out in n.outputs:
+            out.shape = [N, C, Hout, Wout]
+        return
+
+    
+    @staticmethod
+    def _infer_flatten(n: Node) -> None:
+        return 
+
+
+    @staticmethod
+    def _infer_cat(n: Node) -> None:
+        return 
+
+
+    @staticmethod
+    def _infer_interpolate(n: Node) -> None:
         return 

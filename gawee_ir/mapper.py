@@ -140,7 +140,5 @@ class Mapper:
         res = cls._refine_op(node.op, temp, node)
         return res 
 
-
-    # @classmethod
-    # def translate(cls, node: fx.Node): 
-    #     return 
+    
+    # Hereby, we will extract features from fx Node to generate json file.  
