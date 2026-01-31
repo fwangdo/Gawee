@@ -21,6 +21,7 @@ class AttrExtractor:
         mod = cls.gm.get_submodule(node.target) # type: ignore 
         assert isinstance(mod, nn.Module), f'[ERROR]: mod -> {mod}'
         cls.attrs["op_type"] = mod.__class__.__name__
+        cls.attrs["mod"] = mod  # Store module for passes
 
         if isinstance(mod, CONV_TYPE):
             return cls._extract_conv(node, mod) 
@@ -133,15 +134,112 @@ class AttrExtractor:
     def _extract_id(cls, node: fx.Node, mod: ID_TYPE):
         return 
 
-    # handling for calls. 
-    @classmethod 
+    # handling for calls.
+    @classmethod
     def _extract_call_method(cls, node: fx.Node):
-        return node.target 
+        return node.target
 
 
-    @classmethod 
+    # changed by claude. 
+    @classmethod
     def _extract_call_function(cls, node: fx.Node):
-        return node.target 
+        """Extract attributes from call_function operations."""
+        import torch
+        import operator
+
+        target = node.target
+
+        # torch.flatten or Tensor.flatten
+        if target in (torch.flatten,) or (hasattr(target, '__name__') and target.__name__ == 'flatten'): # type: ignore
+            cls._extract_flatten_func(node)
+
+        # torch.cat
+        elif target == torch.cat:
+            cls._extract_cat_func(node)
+
+        # torch.add, operator.add
+        elif target in (torch.add, operator.add):
+            cls.attrs["op_type"] = "Add"
+
+        # torch.mul, operator.mul
+        elif target in (torch.mul, operator.mul):
+            cls.attrs["op_type"] = "Mul"
+
+        # torch.sub, operator.sub
+        elif target in (torch.sub, operator.sub):
+            cls.attrs["op_type"] = "Sub"
+
+        # F.interpolate
+        elif hasattr(target, '__name__') and target.__name__ == 'interpolate':
+            cls._extract_interpolate_func(node)
+
+        return target
+
+
+    @classmethod
+    def _extract_flatten_func(cls, node: fx.Node):
+        """
+        torch.flatten(input, start_dim=0, end_dim=-1)
+        """
+        cls.attrs["op_type"] = "Flatten"
+
+        # start_dim: args[1] or kwargs['start_dim'], default=0
+        if len(node.args) > 1:
+            cls.attrs["start_dim"] = node.args[1]
+        else:
+            cls.attrs["start_dim"] = node.kwargs.get("start_dim", 0)
+
+        # end_dim: args[2] or kwargs['end_dim'], default=-1
+        if len(node.args) > 2:
+            cls.attrs["end_dim"] = node.args[2]
+        else:
+            cls.attrs["end_dim"] = node.kwargs.get("end_dim", -1)
+
+        return
+
+
+    @classmethod
+    def _extract_cat_func(cls, node: fx.Node):
+        """
+        torch.cat(tensors, dim=0)
+        """
+        cls.attrs["op_type"] = "Concat"
+
+        # dim: args[1] or kwargs['dim'], default=0
+        if len(node.args) > 1:
+            cls.attrs["dim"] = node.args[1]
+        else:
+            cls.attrs["dim"] = node.kwargs.get("dim", 0)
+
+        return
+
+
+    @classmethod
+    def _extract_interpolate_func(cls, node: fx.Node):
+        """
+        F.interpolate(input, size=None, scale_factor=None, mode='nearest', ...)
+        """
+        cls.attrs["op_type"] = "Interpolate"
+
+        # size
+        if len(node.args) > 1:
+            cls.attrs["size"] = node.args[1]
+        else:
+            cls.attrs["size"] = node.kwargs.get("size", None)
+
+        # scale_factor
+        if len(node.args) > 2:
+            cls.attrs["scale_factor"] = node.args[2]
+        else:
+            cls.attrs["scale_factor"] = node.kwargs.get("scale_factor", None)
+
+        # mode
+        if len(node.args) > 3:
+            cls.attrs["mode"] = node.args[3]
+        else:
+            cls.attrs["mode"] = node.kwargs.get("mode", "nearest")
+
+        return
 
 
     @classmethod 
