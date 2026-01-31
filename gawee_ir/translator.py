@@ -21,7 +21,9 @@ class Translator:
         os.makedirs(out_dir, exist_ok=True)
         self.out_dir = out_dir
         self.weight_dir = os.path.join(out_dir, "weights")
+        self.const_dir = os.path.join(out_dir, "constants")
         os.makedirs(self.weight_dir, exist_ok=True)
+        os.makedirs(self.const_dir, exist_ok=True)
         self._weight_counter = 0
 
     # ---------- helpers ----------
@@ -30,7 +32,7 @@ class Translator:
         return tensor.detach().cpu().numpy()
 
     def _export_tensor(self, arr: np.ndarray, name: str) -> Dict[str, JSON_TYPE]:
-        """Export numpy array to binary file and return metadata."""
+        """Export weight tensor (from Node.attrs) to weights/ directory."""
         fname = f"{name}.bin"
         path = os.path.join(self.weight_dir, fname)
         arr.tofile(path)
@@ -41,12 +43,12 @@ class Translator:
             "path": f"weights/{fname}",
         }
 
-    def _export_weight(self, v: Value) -> Dict[str, JSON_TYPE]:
-        """Export constant Value to raw binary and return JSON metadata."""
+    def _export_constant(self, v: Value) -> Dict[str, JSON_TYPE]:
+        """Export constant Value to constants/ directory."""
         assert v.data is not None
 
         fname = f"{v.name}.bin"
-        path = os.path.join(self.weight_dir, fname)
+        path = os.path.join(self.const_dir, fname)
 
         arr = np.asarray(v.data)
         arr.tofile(path)
@@ -55,10 +57,7 @@ class Translator:
             "id": v.name,
             "shape": list(arr.shape),
             "dtype": str(arr.dtype),
-            "storage": {
-                "format": "raw",
-                "path": f"weights/{fname}",
-            },
+            "path": f"constants/{fname}",
         }
 
     def _serialize_attr(self, key: str, val: Any, node_name: str) -> JSON_TYPE:
@@ -91,12 +90,40 @@ class Translator:
         # Fallback: convert to string
         return str(val)
 
+    def _is_model_parameter(self, v: Value) -> bool:
+        """Check if a Value represents a model parameter (weight/bias/buffer).
+
+        Model parameters:
+        - Have data (is_const() is True)
+        - Have no producer (not created by a node)
+        - Are not graph inputs
+        - Names typically contain 'weight', 'bias', 'running_mean', etc.
+        """
+        if not v.is_const():
+            return False
+        if v.producer is not None:
+            return False
+        # Model params have hierarchical names like 'layer1.0.conv1.weight'
+        name_parts = v.name.split('.')
+        if len(name_parts) > 0:
+            last_part = name_parts[-1]
+            if last_part in WEIGHT_ATTRS or 'num_batches_tracked' in last_part:
+                return True
+        return False
+
     # ---------- translation functions ----------
 
-    def _value_to_json(self, v: Value) -> Dict[str, JSON_TYPE]:
-        if v.is_const():
-            return self._export_weight(v)
+    def _value_to_json(self, v: Value, graph_inputs: set) -> Dict[str, JSON_TYPE] | None:
+        """Convert Value to JSON. Returns None if Value should be skipped."""
+        # Skip model parameters - they are exported via Node.attrs
+        if self._is_model_parameter(v):
+            return None
 
+        # Export graph constants (created during rewrites, not model params)
+        if v.is_const():
+            return self._export_constant(v)
+
+        # Regular Value (activation) - just metadata
         return {
             "id": v.name,
             "shape": v.shape,  # type: ignore
@@ -126,12 +153,19 @@ class Translator:
     # ---------- public ----------
 
     def export(self, graph: Graph, fname: str = "graph.json") -> None:
+        graph_input_names = {v.name for v in graph.inputs}
+
+        # Build values dict, skipping model parameters
+        values_json = {}
+        for name, v in graph.values.items():
+            v_json = self._value_to_json(v, graph_input_names)
+            if v_json is not None:
+                values_json[name] = v_json
+
         graph_json = {
             "inputs": [v.name for v in graph.inputs],
             "outputs": [v.name for v in graph.outputs],
-            "values": {
-                name: self._value_to_json(v) for name, v in graph.values.items()
-            },
+            "values": values_json,
             "nodes": [self._node_to_json(n) for n in graph.nodes],
         }
 
