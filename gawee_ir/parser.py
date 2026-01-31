@@ -122,19 +122,8 @@ class TorchParser:
             dtype=dtype,
         )
 
-        mod = cls._parse_call_name(node) 
-
-        print()
-        print(f'module -> {mod}, {type(mod)}')
-        print(f'dir -> {dir(mod)}')
         op_type = Mapper.translate(node, cls.gm)
-
         attrs = AttrExtractor.extract(node)
-        attrs = {
-            "target": node.target, # dl opearation. 
-            "op": node.op,
-            "mod": mod,
-        }
 
         n = Node(
             op_type=op_type,

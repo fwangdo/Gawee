@@ -12,7 +12,7 @@ class Mapper:
 
     @classmethod
     def _extract_axes(cls, node: fx.Node):
-        print(f'operator -> {node}')
+        # print(f'operator -> {node}')
 
         # dim can be in args or kwargs
         if "dim" in node.kwargs:
