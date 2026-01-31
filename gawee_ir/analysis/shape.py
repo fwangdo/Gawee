@@ -34,6 +34,8 @@ class ShapeInference:
             cls._infer_transpose(n)
         elif op in { MAXPOOL, AVGPOOL }:
             cls._infer_pool(n)
+        elif op == AD_AVGPOOL:
+            cls._infer_ad_pool(n)
         elif op == FLATTEN:
             cls._infer_flatten(n)
         elif op == CAT:
@@ -201,6 +203,11 @@ class ShapeInference:
         for out in n.outputs:
             out.shape = [N, C, Hout, Wout]
         return
+
+
+    @staticmethod
+    def _infer_ad_pool(n: Node) -> None:
+        return 
 
     
     @staticmethod

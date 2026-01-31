@@ -266,18 +266,20 @@ class CostModel:
     @classmethod
     def _parse_module_name(cls, n: Node) -> str:  
         mod = n.attrs["mod"]
-        if isinstance(mod, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
+        if isinstance(mod, CONV_TYPE):
             return CONV
-        if isinstance(mod, nn.Linear):
+        elif isinstance(mod, LINEAR_TYPE):
             return MATMUL
-        if isinstance(mod, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+        elif isinstance(mod, BN_TYPE):
             return BATCH_NORM
-        if isinstance(mod, nn.ReLU):
+        elif isinstance(mod, RELU_TYPE):
             return RELU
-        if isinstance(mod, (nn.MaxPool1d, nn.MaxPool2d, nn.MaxPool3d)):
+        elif isinstance(mod, MXPOOL_TYPE):
             return MAXPOOL
-        if isinstance(mod, (nn.AvgPool1d, nn.AvgPool2d, nn.AvgPool3d, nn.AdaptiveAvgPool1d, nn.AdaptiveAvgPool2d, nn.AdaptiveAvgPool3d)):
+        elif isinstance(mod, AVGPOOL_TYPE):
             return AVGPOOL
+        elif isinstance(mod, AD_AVGPOOL_TYPE):
+            return AD_AVGPOOL
 
         raise Exception(f'[ERROR]: {mod} is not defined yet')
 
