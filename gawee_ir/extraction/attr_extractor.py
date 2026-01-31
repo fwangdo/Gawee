@@ -159,18 +159,18 @@ class AttrExtractor:
 
         # torch.add, operator.add
         elif target in (torch.add, operator.add):
-            cls.attrs["op_type"] = "Add"
+            cls.attrs["op_type"] = ADD 
 
         # torch.mul, operator.mul
         elif target in (torch.mul, operator.mul):
-            cls.attrs["op_type"] = "Mul"
+            cls.attrs["op_type"] = MUL 
 
         # torch.sub, operator.sub
         elif target in (torch.sub, operator.sub):
-            cls.attrs["op_type"] = "Sub"
+            cls.attrs["op_type"] = SUB 
 
         # F.interpolate
-        elif hasattr(target, '__name__') and target.__name__ == 'interpolate':
+        elif hasattr(target, '__name__') and target.__name__ == 'interpolate': # type: ignore
             cls._extract_interpolate_func(node)
 
         return target
@@ -181,19 +181,19 @@ class AttrExtractor:
         """
         torch.flatten(input, start_dim=0, end_dim=-1)
         """
-        cls.attrs["op_type"] = "Flatten"
+        cls.attrs["op_type"] = FLATTEN 
 
         # start_dim: args[1] or kwargs['start_dim'], default=0
         if len(node.args) > 1:
             cls.attrs["start_dim"] = node.args[1]
         else:
-            cls.attrs["start_dim"] = node.kwargs.get("start_dim", 0)
+            cls.attrs["start_dim"] = 0 
 
         # end_dim: args[2] or kwargs['end_dim'], default=-1
         if len(node.args) > 2:
             cls.attrs["end_dim"] = node.args[2]
         else:
-            cls.attrs["end_dim"] = node.kwargs.get("end_dim", -1)
+            cls.attrs["end_dim"] = -1 
 
         return
 
@@ -203,13 +203,13 @@ class AttrExtractor:
         """
         torch.cat(tensors, dim=0)
         """
-        cls.attrs["op_type"] = "Concat"
+        cls.attrs["op_type"] = CAT 
 
         # dim: args[1] or kwargs['dim'], default=0
         if len(node.args) > 1:
             cls.attrs["dim"] = node.args[1]
         else:
-            cls.attrs["dim"] = node.kwargs.get("dim", 0)
+            cls.attrs["dim"] = 0 
 
         return
 
@@ -219,7 +219,7 @@ class AttrExtractor:
         """
         F.interpolate(input, size=None, scale_factor=None, mode='nearest', ...)
         """
-        cls.attrs["op_type"] = "Interpolate"
+        cls.attrs["op_type"] = INTERPOLATE 
 
         # size
         if len(node.args) > 1:

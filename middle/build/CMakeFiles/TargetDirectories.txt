@@ -1,3 +1,0 @@
-/Users/hdy/code/portfolio/Gawee/runtime/build/CMakeFiles/gawee_parser.dir
-/Users/hdy/code/portfolio/Gawee/runtime/build/CMakeFiles/edit_cache.dir
-/Users/hdy/code/portfolio/Gawee/runtime/build/CMakeFiles/rebuild_cache.dir

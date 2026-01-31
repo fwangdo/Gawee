@@ -13,8 +13,15 @@ def _to_tuple(val: Any, ndim: int = 2) -> Tuple[int, ...]:
     if isinstance(val, (tuple, list)):
         return tuple(val)
 
-    # default. 
+    # default.
     return tuple([1] * ndim)
+
+
+def _is_concrete_shape(shape: List[Any] | None) -> bool:
+    """Check if shape contains only concrete integers (no symbolic nodes)."""
+    if shape is None:
+        return False
+    return all(isinstance(d, int) for d in shape)
 
 
 class ShapeInference:
@@ -92,7 +99,7 @@ class ShapeInference:
         if not n.inputs:
             return
         x = n.inputs[0]
-        if x.shape is None:
+        if not _is_concrete_shape(x.shape):
             return
 
         in_shape = x.shape
@@ -333,7 +340,6 @@ class ShapeInference:
 
 
     # for python operation. 
-    # TODO: check. 
     @staticmethod
     def _infer_flatten(n: Node) -> None:
         """
