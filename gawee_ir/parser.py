@@ -10,6 +10,7 @@ import numpy as np
 from gawee_ir.graph import Graph, Node, Value
 from gawee_ir.constant.ops import *
 from gawee_ir.mapper import *
+from gawee_ir.extraction.attr_extractor import *
 
 
 class TorchParser:
@@ -124,6 +125,7 @@ class TorchParser:
         mod = cls._parse_call_name(node) 
         op_type = Mapper.translate(node, cls.gm)
 
+        attrs = AttrExtractor.extract(node)
         attrs = {
             "target": node.target, # dl opearation. 
             "op": node.op,
@@ -164,6 +166,7 @@ class TorchParser:
     ) -> Graph:
         # init. 
         cls.gm = gm 
+        AttrExtractor.init(gm)
         cls.g = Graph()
         cls.env = dict()
 
@@ -203,3 +206,4 @@ class TorchParser:
                 raise NotImplementedError(f"Unsupported FX op: {node.op}")
 
         return cls.g
+
