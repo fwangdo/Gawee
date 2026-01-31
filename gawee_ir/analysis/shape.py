@@ -207,17 +207,133 @@ class ShapeInference:
 
     @staticmethod
     def _infer_ad_pool(n: Node) -> None:
-        return 
+        """
+        Adaptive Average Pooling.
+        attrs:
+          - output_size: target spatial dimensions (int or tuple)
+        Input:  [N, C, *spatial]
+        Output: [N, C, *output_size]
+        """
+        if not n.inputs:
+            return
+        x = n.inputs[0]
+        if x.shape is None or len(x.shape) < 3:
+            return
+
+        output_size = n.attrs.get("output_size")
+        if output_size is None:
+            return
+
+        # output_size can be int or tuple
+        if isinstance(output_size, int):
+            output_size = [output_size]
+        elif isinstance(output_size, tuple):
+            output_size = list(output_size)
+
+        # Handle None in output_size (means keep original dim)
+        spatial_dims = list(x.shape[2:])
+        for i, s in enumerate(output_size):
+            if s is None:
+                output_size[i] = spatial_dims[i] if i < len(spatial_dims) else 1
+
+        out_shape = list(x.shape[:2]) + output_size
+        for out in n.outputs:
+            out.shape = out_shape
+        return
 
     
     @staticmethod
     def _infer_flatten(n: Node) -> None:
-        return 
+        """
+        Flatten operation.
+        attrs:
+          - start_dim: first dim to flatten (default: 1)
+          - end_dim: last dim to flatten (default: -1)
+        """
+        if not n.inputs:
+            return
+        x = n.inputs[0]
+        if x.shape is None:
+            return
+
+        shape = list(x.shape)
+        ndim = len(shape)
+
+        start_dim = n.attrs.get("start_dim", 1)
+        end_dim = n.attrs.get("end_dim", -1)
+
+        # Handle negative indices
+        if start_dim < 0:
+            start_dim = ndim + start_dim
+        if end_dim < 0:
+            end_dim = ndim + end_dim
+
+        # Clamp to valid range
+        start_dim = max(0, min(start_dim, ndim - 1))
+        end_dim = max(0, min(end_dim, ndim - 1))
+
+        if start_dim > end_dim:
+            return
+
+        # Compute flattened dimension size
+        flat_size = 1
+        for i in range(start_dim, end_dim + 1):
+            flat_size *= shape[i]
+
+        out_shape = shape[:start_dim] + [flat_size] + shape[end_dim + 1:]
+        for out in n.outputs:
+            out.shape = out_shape
+        return
 
 
     @staticmethod
     def _infer_cat(n: Node) -> None:
-        return 
+        """
+        Concatenation along an axis.
+        attrs:
+          - axis or dim: concatenation dimension (default: 0)
+        """
+        if not n.inputs:
+            return
+
+        # All inputs must have shapes
+        shapes = []
+        for inp in n.inputs:
+            if inp.shape is None:
+                return
+            shapes.append(list(inp.shape))
+
+        if not shapes:
+            return
+
+        # Get concatenation axis
+        axis = n.attrs.get("axis", n.attrs.get("dim", 0))
+        ndim = len(shapes[0])
+
+        # Handle negative axis
+        if axis < 0:
+            axis = ndim + axis
+
+        if axis < 0 or axis >= ndim:
+            return
+
+        # Verify all inputs have same shape except concat axis
+        ref_shape = shapes[0]
+        for s in shapes[1:]:
+            if len(s) != ndim:
+                return
+            for i in range(ndim):
+                if i != axis and s[i] != ref_shape[i]:
+                    return
+
+        # Compute output shape
+        concat_size = sum(s[axis] for s in shapes)
+        out_shape = list(ref_shape)
+        out_shape[axis] = concat_size
+
+        for out in n.outputs:
+            out.shape = out_shape
+        return
 
 
     @staticmethod

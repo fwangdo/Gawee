@@ -108,7 +108,18 @@ class AttrExtractor:
 
     @classmethod
     def _extract_avgpool(cls, node: fx.Node, mod: AVGPOOL_TYPE):
-        # cls.attrs[""] = mod. 
+        '''
+        - kernel_size - pooling window size                                                                                                                                                                                                                                                                                  
+        - stride - stride of the pooling window (defaults to kernel_size if None)                                                                                                                                                                                                                                            
+        - padding - zero-padding added to both sides                                                                                                                                                                                                                                                                         
+        - ceil_mode - whether to use ceil instead of floor for output shape computation                                                                                                                                                                                                                                      
+        - count_include_pad - whether to include zero-padding in the averaging calculation   
+        '''
+        cls.attrs["kernel_size"] = mod.kernel_size
+        cls.attrs["stride"] = mod.stride
+        cls.attrs["padding"] = mod.padding
+        cls.attrs["ceil_mode"] = mod.ceil_mode
+        cls.attrs["count_include_pad"] = mod.count_include_pad
         return
 
 
@@ -121,7 +132,6 @@ class AttrExtractor:
     @classmethod 
     def _extract_id(cls, node: fx.Node, mod: ID_TYPE):
         return 
-    # TODO 
 
     # handling for calls. 
     @classmethod 
