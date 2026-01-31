@@ -68,6 +68,10 @@ class AttrExtractor:
 
     @classmethod 
     def _extract_linear(cls, node: fx.Node, mod: LINEAR_TYPE):
+        cls.attrs["in_features"] = mod.in_features
+        cls.attrs["out_features"] = mod.out_features
+        cls.attrs["weight"] = mod.weight
+        cls.attrs["bias"] = mod.bias
         return 
 
 
@@ -104,7 +108,7 @@ class AttrExtractor:
 
     @classmethod
     def _extract_avgpool(cls, node: fx.Node, mod: AVGPOOL_TYPE):
-        cls.attrs[""] = mod. 
+        # cls.attrs[""] = mod. 
         return
 
 
