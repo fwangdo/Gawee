@@ -18,7 +18,7 @@ class TorchParser:
     # extract information.  
     @classmethod
     def _extract_axes(cls, node: fx.Node):
-        print(f'operator -> {node}')
+        # print(f'operator -> {node}')
 
         # dim can be in args or kwargs
         if "dim" in node.kwargs:
@@ -123,6 +123,10 @@ class TorchParser:
         )
 
         mod = cls._parse_call_name(node) 
+
+        print()
+        print(f'module -> {mod}, {type(mod)}')
+        print(f'dir -> {dir(mod)}')
         op_type = Mapper.translate(node, cls.gm)
 
         attrs = AttrExtractor.extract(node)

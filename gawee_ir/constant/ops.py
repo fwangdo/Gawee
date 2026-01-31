@@ -17,6 +17,7 @@ TRANS      = "Transpose"
 # extra ops used by some ONNX graphs
 MAXPOOL    = "MaxPool"
 AVGPOOL    = "AvgPool"
+AD_AVGPOOL = "AdAvgPool" # adaptive average pool.  
 REDUCE_MEAN = "ReduceMean"
 IDENTITY    = "Identity"
 

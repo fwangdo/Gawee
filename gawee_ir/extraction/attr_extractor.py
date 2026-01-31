@@ -20,6 +20,7 @@ class AttrExtractor:
     def _extract_call_module(cls, node: fx.Node):
         mod = cls.gm.get_submodule(node.target) # type: ignore 
         assert isinstance(mod, nn.Module), f'[ERROR]: mod -> {mod}'
+        cls.attrs["op_type"] = mod.__class__.__name__
 
         if isinstance(mod, CONV_TYPE):
             return cls._extract_conv(node, mod) 
@@ -32,7 +33,9 @@ class AttrExtractor:
         elif isinstance(mod, MXPOOL_TYPE):
             return cls._extract_maxpool(node, mod) 
         elif isinstance(mod, AVGPOOL_TYPE):
-            return cls._extract_avgpool(node, mod) 
+            return cls._extract_avgpool(node, mod)
+        elif isinstance(mod, AD_AVGPOOL_TYPE):
+            return cls._extract_adaptive_avgpool(node, mod) 
         elif isinstance(mod, ID_TYPE):
             return cls._extract_id(node, mod) 
 
@@ -70,21 +73,44 @@ class AttrExtractor:
 
     @classmethod
     def _extract_bn(cls, node: fx.Node, mod: BN_TYPE):
+        cls.attrs["num_features"] = mod.num_features
+        cls.attrs["weight"] = mod.weight # scale of bn. 
+        cls.attrs["bias"] = mod.bias # bias of bn
+        cls.attrs["affine"] = mod.affine # whether it's affine or not. 
+        cls.attrs["running_mean"] = mod.running_mean # mu
+        cls.attrs["running_var"] = mod.running_var # sigma ^ 2. 
+        cls.attrs["num_batches_tracked"] = mod.num_batches_tracked
+        cls.attrs["eps"] = mod.eps
+        cls.attrs["momentum"] = mod.momentum
+        cls.attrs["track_running_stats"] = mod.track_running_stats
         return 
 
 
     @classmethod
     def _extract_relu(cls, node: fx.Node, mod: RELU_TYPE):
+        cls.attrs["inplace"] = mod.inplace
         return 
 
     
     @classmethod 
     def _extract_maxpool(cls, node: fx.Node, mod: MXPOOL_TYPE):
+        cls.attrs["kernel_size"] = mod.kernel_size
+        cls.attrs["stride"] = mod.stride
+        cls.attrs["padding"] = mod.padding
+        cls.attrs["dilation"] = mod.dilation
+        cls.attrs["ceil_mode"] = mod.ceil_mode
         return 
 
 
-    @classmethod 
+    @classmethod
     def _extract_avgpool(cls, node: fx.Node, mod: AVGPOOL_TYPE):
+        cls.attrs[""] = mod. 
+        return
+
+
+    @classmethod 
+    def _extract_adaptive_avgpool(cls, node: fx.Node, mod: AD_AVGPOOL_TYPE):
+        cls.attrs["output_size"] = mod.output_size 
         return   
 
 
