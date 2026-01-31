@@ -28,7 +28,7 @@ class AttrExtractor:
         elif isinstance(mod, BN_TYPE):
             return cls._extract_bn(node, mod) 
         elif isinstance(mod, RELU_TYPE):
-            return cls._extract_bn(node, mod) 
+            return cls._extract_relu(node, mod) 
         elif isinstance(mod, MXPOOL_TYPE):
             return cls._extract_maxpool(node, mod) 
         elif isinstance(mod, AVGPOOL_TYPE):
@@ -52,10 +52,14 @@ class AttrExtractor:
             bias (bool, optional) If True, adds a learnable bias to the output. Default: True
             padding_mode (str, optional) 'zeros', 'reflect', 'replicate' or 'circular'. Default: 'zeros'
         '''
-        print(f'mod -> {mod}')
-        print(f'dir -> {dir(mod)}')
-        sys.exit(1)
-        # cls.attr[] = 
+        cls.attrs["out_channels"] = mod.out_channels
+        cls.attrs["kernel_size"]  = mod.kernel_size
+        cls.attrs["stride"]       = mod.stride 
+        cls.attrs["padding"]      = mod.padding 
+        cls.attrs["dilation"]     = mod.dilation 
+        cls.attrs["groups"]       = mod.groups 
+        cls.attrs["weight"]       = mod.weight
+        cls.attrs["bias"]         = mod.bias
         return 
 
 
