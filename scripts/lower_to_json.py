@@ -62,22 +62,16 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # 1) Load model
+    # 1) ready.  
     model, example_input = load_model(args.model, args.weight)
-
-    # 2) FX trace
     gm = fx.symbolic_trace(model)
-
-    # 3) Parse into Gawee IR
     g = TorchParser.parse_fx(gm, example_input)
-
-    # 4) Shape inference
     ShapeInference.run(g)
 
-    # 5) Graph rewrite passes
+    # 2) Graph.   
     Passer.run(g)
 
-    # 6) Translate graph into json and bin. 
+    # 3) Translate graph into json and bin. 
     path = "jsondata"
     trans = Translator(path)
     trans.export(g)

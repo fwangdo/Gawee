@@ -125,7 +125,8 @@ class TorchParser:
         mod = cls._parse_call_name(node) 
         op_type = Mapper.translate(node, cls.gm)
 
-        attrs = AttrExtractor.extract(node)
+        # attrs = AttrExtractor.extract(node)
+        # we do not have make attrs accurately here. 
         attrs = {
             "target": node.target, # dl opearation. 
             "op": node.op,

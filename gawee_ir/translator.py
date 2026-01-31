@@ -6,6 +6,7 @@ import os
 import numpy as np
 
 from gawee_ir.graph import Graph, Value, Node
+from gawee_ir.extraction.attr_extractor import *
 
 BASIC_TYPE = str | bool | None | int | float 
 HIGHER_TYPE = List[BASIC_TYPE] | Dict[str, BASIC_TYPE]
@@ -56,11 +57,15 @@ class Translator:
         }
 
     def _node_to_json(self, n: Node) -> Dict[str, JSON_TYPE]:
+        # we need to generate new attributes here. 
+        # Because we rewrite some parts of graph(e.g., conv-bn folding), we can make correct attributes here only. 
+        attrs = AttrExtractor.extract(n.raw) 
+
         return {
             "op_type": n.op_type,
             "inputs": [v.name for v in n.inputs],
             "outputs": [v.name for v in n.outputs],
-            "attrs": n.attrs,
+            "attrs": attrs,
         }
 
     # ---------- public ----------
