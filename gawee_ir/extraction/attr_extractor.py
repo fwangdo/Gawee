@@ -280,12 +280,8 @@ class AttrExtractor:
     @classmethod
     def extract(cls, node: fx.Node) -> Dict[str, Any]:
         cls.attrs: Dict[str, Any] = {
-            "target": node.target, # dl opearation. 
+            "target": node.target,
             "op": node.op,
         }
-        cls._extract_call(node) 
-
-        print()
-        print(f'node -> {node}')
-        print(f'attrs -> {cls.attrs}')
-        return cls.attrs 
+        cls._extract_call(node)
+        return cls.attrs

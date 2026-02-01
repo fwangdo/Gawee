@@ -3,6 +3,8 @@ from typing     import *
 
 from gawee_ir.graph import *
 from gawee_ir.constant.ops import *
+from gawee_ir.mapper import Mapper
+
 import math
 
 
@@ -483,3 +485,65 @@ class ShapeInference:
         for out in n.outputs:
             out.shape = out_shape
         return
+
+
+
+DimType = List[int] | None
+
+
+class TorchShapeAnalyzer:
+    """Analyze shape/dtype for ops that require access to the original GraphModule."""
+
+    gm: fx.GraphModule
+
+    @classmethod
+    def init(cls, gm: fx.GraphModule) -> None:
+        cls.gm = gm
+
+    # -------------------- shape analysis --------------------
+
+    @classmethod
+    def _infer_getattr_shape(cls, node: fx.Node) -> DimType:
+        # TODO: implement - lookup parameter shape from cls.gm
+        pass
+
+    @classmethod
+    def _infer_getitem_shape(cls, node: fx.Node) -> DimType:
+        # TODO: implement - handle indexing result shape
+        pass
+
+    # -------------------- dtype analysis --------------------
+
+    @classmethod
+    def _infer_getattr_dtype(cls, node: fx.Node) -> str | None:
+        # TODO: implement - lookup parameter dtype from cls.gm
+        pass
+
+    @classmethod
+    def _infer_getitem_dtype(cls, node: fx.Node) -> str | None:
+        # TODO: implement - handle indexing result dtype
+        pass
+
+    # -------------------- main entry points --------------------
+
+    @classmethod
+    def infer_shape(cls, node: fx.Node) -> DimType:
+        op = Mapper.translate(node, cls.gm)
+
+        if op == GETATTR:
+            return cls._infer_getattr_shape(node)
+        elif op == GETITEM:
+            return cls._infer_getitem_shape(node)
+        else:
+            raise NotImplementedError(f'[TorchShapeAnalyzer] shape inference for {op} not defined')
+
+    @classmethod
+    def infer_dtype(cls, node: fx.Node) -> str | None:
+        op = Mapper.translate(node, cls.gm)
+
+        if op == GETATTR:
+            return cls._infer_getattr_dtype(node)
+        elif op == GETITEM:
+            return cls._infer_getitem_dtype(node)
+        else:
+            raise NotImplementedError(f'[TorchShapeAnalyzer] dtype inference for {op} not defined')

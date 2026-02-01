@@ -1,5 +1,4 @@
 from gawee_ir.parser import TorchParser
-from gawee_ir.analysis.shape import ShapeInference
 from gawee_ir.analysis.cost import CostModel
 from gawee_ir.passes.passer import Passer
 
@@ -66,26 +65,22 @@ def main():
     # 2) FX trace
     gm = fx.symbolic_trace(model)
 
-    # 3) Parse into Gawee IR
+    # 3) Parse into Gawee IR (shapes from PyTorch's ShapeProp)
     g = TorchParser.parse_fx(gm, example_input)
 
-    # 4) Shape inference
-    ShapeInference.run(g)
-
-    # check ir mode. 
     if args.check_mode:
         g.show_node()
-        return 
+        return
 
-    # 5) Cost before optimization
+    # 4) Cost before optimization
     print("== Before ==")
     CostModel.init(gm)
     CostModel.print_report(g)
 
-    # 6) Graph rewrite passes
+    # 5) Graph rewrite passes
     Passer.run(g)
 
-    # 7) Cost after optimization
+    # 6) Cost after optimization
     print("\n\n== After ==")
     CostModel.print_report(g)
 

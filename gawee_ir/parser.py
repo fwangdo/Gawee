@@ -7,72 +7,89 @@ import torch
 import torch.fx as fx
 import numpy as np
 
-from gawee_ir.graph import Graph, Node, Value
+from gawee_ir.graph import Graph, Node, Value, DimType
 from gawee_ir.constant.ops import *
 from gawee_ir.mapper import *
 from gawee_ir.extraction.attr_extractor import *
+from gawee_ir.analysis.shape import TorchShapeAnalyzer
 
 
 class TorchParser:
 
-    # extract information.  
-    @classmethod
-    def _extract_axes(cls, node: fx.Node):
-        # print(f'operator -> {node}')
+    @staticmethod
+    def _to_shape(shape: torch.Size) -> List[int]:
+        """Convert torch.Size to List[int]. Fails on symbolic dims."""
+        result = []
+        for d in shape:
+            if isinstance(d, int):
+                result.append(d)
+            elif isinstance(d, fx.Node):
+                # TODO. 
+                raise TypeError(f"Symbolic dimension not supported: {d}")
+            else:
+                raise TypeError(f"Unknown dimension type: {type(d)}")
+        return result
 
-        # dim can be in args or kwargs
-        if "dim" in node.kwargs:
-            dim = node.kwargs["dim"]
-        elif len(node.args) >= 2:
-            dim = node.args[1]
+
+    @staticmethod
+    def _to_dtype(dtype: torch.dtype) -> str:
+        """Convert torch.dtype to string."""
+        return str(dtype)
+
+
+    @classmethod
+    def _get_shape(cls, node: fx.Node) -> DimType:
+        tm = node.meta.get(TENSOR_META)
+        if tm is not None:
+            shape = cls._to_shape(tm.shape)
+            # print(f'shape -> {shape}, type -> {type(shape)}')
         else:
-            return
+            # TODO we have to consider this based on each function. 
+            print(f'node -> {node}, meta -> {node.meta}')
+            shape = None
+        
+        return shape 
 
-        # normalize: int -> tuple[int]
-        if isinstance(dim, int):
-            return (dim,)
-        if isinstance(dim, (list, tuple)):
-            return tuple(dim)
+        
+    @classmethod
+    def _get_dtype(cls, node: fx.Node) -> str:
+        tm = node.meta.get(TENSOR_META)
+        if tm is not None:
+            dtype = cls._to_dtype(tm.dtype)
+        else:
+            dtype = None
 
-        return 
+        return dtype 
+
+
+    # parsing for each call.
+    @classmethod
+    def _parse_call_module(cls, node: fx.Node):
+        return cls.gm.get_submodule(node.target) # type: ignore
 
 
     @classmethod
-    def _extract_keepdims(cls, node: fx.Node):
-        if "keepdim" in node.kwargs:
-            return int(bool(node.kwargs["keepdim"]))
-        return 
-
-
-    # parsing for each call.  
-    @classmethod 
-    def _parse_call_module(cls, node: fx.Node):
-        return cls.gm.get_submodule(node.target) # type: ignore 
-
-
-    @classmethod 
     def _parse_call_method(cls, node: fx.Node):
-        return node.target 
+        return node.target
 
 
-    @classmethod 
+    @classmethod
     def _parse_call_function(cls, node: fx.Node):
-        return node.target 
+        return node.target
 
-    
-    @classmethod 
-    def _parse_call_name(cls, node: fx.Node): 
-        if node.op == CALL_FUNCTION: 
-            return cls._parse_call_function(node) 
+
+    @classmethod
+    def _parse_call_name(cls, node: fx.Node):
+        if node.op == CALL_FUNCTION:
+            return cls._parse_call_function(node)
         elif node.op == CALL_METHOD:
-            return cls._parse_call_method(node) 
+            return cls._parse_call_method(node)
         elif node.op == CALL_MODULE:
-            return cls._parse_call_module(node) 
+            return cls._parse_call_module(node)
         else:
             raise Exception(f'{node.op} is not supported yet')
 
 
-    # preliminaries
     @classmethod
     def _extract(cls, v):
         if isinstance(v, fx.Node):
@@ -80,49 +97,29 @@ class TorchParser:
         elif isinstance(v, (list, tuple)):
             return [cls._extract(x) for x in v]
         else:
-            return
+            raise Exception(f'[ERROR]: v -> {v} in {type(v)}')
 
 
-    # parsing for each operation type. 
+    # parsing for each operation type.
     @classmethod
     def _parse_placeholder(cls, node: fx.Node) -> None:
+        tm = node.meta[TENSOR_META]
         v = cls.g.get_value(
             name=node.name,
-            shape=cls._sanitize_shape(node.meta[TENSOR_META].shape),
-            dtype=str(node.meta[TENSOR_META].dtype),
+            shape=cls._to_shape(tm.shape),
+            dtype=cls._to_dtype(tm.dtype),
         )
         cls.g.add_input(v)
         cls.env[node.name] = v
         return 
 
 
-    @classmethod    
+    @classmethod
     def _parse_get_attr(cls, node: fx.Node) -> None:
-        # parameter / buffer access
-        # e.g., linear.weight. 
         v = cls.g.get_value(name=node.target)
         cls.env[node.name] = v
-        return      
+        return 
 
-    
-    @staticmethod
-    def _sanitize_shape(shape) -> List[int] | None:
-        """Convert shape to list of ints, replacing symbolic dims with None."""
-        if shape is None:
-            return None
-        result = []
-        for d in shape:
-            if isinstance(d, int):
-                result.append(d)
-            elif hasattr(d, 'item'):  # torch.SymInt or similar
-                try:
-                    result.append(int(d))
-                except:
-                    return None
-            else:
-                # fx.Node or other symbolic - shape is dynamic
-                return None
-        return result
 
     @classmethod
     def _parse_call(cls, node: fx.Node) -> None:
@@ -130,10 +127,9 @@ class TorchParser:
         for arg in node.all_input_nodes:
             ins.append(cls.env[arg.name])
 
-        # output
-        tm = node.meta.get(TENSOR_META, None)
-        shape = cls._sanitize_shape(tm.shape) if tm is not None else None
-        dtype = str(tm.dtype) if tm is not None else None
+        # output shape/dtype from PyTorch's ShapeProp
+        shape = cls._get_shape(node)
+        dtype = cls._get_dtype(node)
 
         out = cls.g.get_value(
             name=node.name,
@@ -149,25 +145,24 @@ class TorchParser:
             inputs=ins,
             outputs=[out],
             raw_name=str(node.target),
-            raw = node, 
+            raw=node,
             attrs=attrs,
             name=node.name,
             call_type=node.op,
         )
         cls.g.add_node(n)
         cls.env[node.name] = out
-        return 
 
-    
-    @classmethod    
+
+    @classmethod
     def _parse_output(cls, node: fx.Node) -> None:
         outs = cls._extract(node.args[0])
         if isinstance(outs, list):
             for v in outs:
                 cls.g.add_output(v)
         else:
-            cls.g.add_output(outs) # type: ignore 
-        return
+            cls.g.add_output(outs)
+        return 
 
 
     @classmethod
@@ -176,23 +171,18 @@ class TorchParser:
         gm: fx.GraphModule,
         example_inputs: Tuple[torch.Tensor, ...],
     ) -> Graph:
-        # init. 
-        cls.gm = gm 
+        cls.gm = gm
         AttrExtractor.init(gm)
         cls.g = Graph()
         cls.env = dict()
 
-        # --- 0) shape propagation ---
+        # shape propagation with concrete inputs
         from torch.fx.passes.shape_prop import ShapeProp
         ShapeProp(gm).propagate(*example_inputs)
 
-        # --- 1) parameters / buffers -> constants ---
+        # parameters / buffers -> constants
         params = dict(gm.named_parameters())
         buffers = dict(gm.named_buffers())
-
-        # ... 
-        # print(f'params -> {list(params.keys())} ') # weights changed by gradient descent.   
-        # print(f'buffers -> {list(buffers.keys())} ') # var, mean, etc..  
 
         for name, t in {**params, **buffers}.items():
             arr: np.ndarray = t.detach().cpu().numpy()
@@ -203,19 +193,17 @@ class TorchParser:
             )
             v.data = arr
 
-        # --- 2) nodes ---
+        # nodes
         for node in gm.graph.nodes:
-            # print(f'operator -> {node.op}')
             if node.op == PLACEHOLDER:
                 cls._parse_placeholder(node)
             elif node.op == GET_ATTR:
                 cls._parse_get_attr(node)
             elif node.op in { CALL_FUNCTION, CALL_METHOD, CALL_MODULE }:
-                cls._parse_call(node)       
+                cls._parse_call(node)
             elif node.op == OUTPUT:
-                cls._parse_output(node) 
+                cls._parse_output(node)
             else:
                 raise NotImplementedError(f"Unsupported FX op: {node.op}")
 
         return cls.g
-
