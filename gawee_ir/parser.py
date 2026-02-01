@@ -84,11 +84,11 @@ class TorchParser:
 
 
     # parsing for each operation type. 
-    @classmethod 
+    @classmethod
     def _parse_placeholder(cls, node: fx.Node) -> None:
         v = cls.g.get_value(
             name=node.name,
-            shape=list(node.meta[TENSOR_META].shape),
+            shape=cls._sanitize_shape(node.meta[TENSOR_META].shape),
             dtype=str(node.meta[TENSOR_META].dtype),
         )
         cls.g.add_input(v)
@@ -105,6 +105,25 @@ class TorchParser:
         return      
 
     
+    @staticmethod
+    def _sanitize_shape(shape) -> List[int] | None:
+        """Convert shape to list of ints, replacing symbolic dims with None."""
+        if shape is None:
+            return None
+        result = []
+        for d in shape:
+            if isinstance(d, int):
+                result.append(d)
+            elif hasattr(d, 'item'):  # torch.SymInt or similar
+                try:
+                    result.append(int(d))
+                except:
+                    return None
+            else:
+                # fx.Node or other symbolic - shape is dynamic
+                return None
+        return result
+
     @classmethod
     def _parse_call(cls, node: fx.Node) -> None:
         ins: List[Value] = []
@@ -113,7 +132,7 @@ class TorchParser:
 
         # output
         tm = node.meta.get(TENSOR_META, None)
-        shape = list(tm.shape) if tm is not None else None
+        shape = cls._sanitize_shape(tm.shape) if tm is not None else None
         dtype = str(tm.dtype) if tm is not None else None
 
         out = cls.g.get_value(

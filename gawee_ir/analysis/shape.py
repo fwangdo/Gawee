@@ -24,6 +24,20 @@ def _is_concrete_shape(shape: List[Any] | None) -> bool:
     return all(isinstance(d, int) for d in shape)
 
 
+def _sanitize_shape(shape: List[Any] | None) -> List[int] | None:
+    """Convert shape to list of ints. Return None if any dim is symbolic."""
+    if shape is None:
+        return None
+    result = []
+    for d in shape:
+        if isinstance(d, int):
+            result.append(d)
+        else:
+            # Symbolic dimension (fx.Node, SymInt, etc.) - treat entire shape as unknown
+            return None
+    return result
+
+
 class ShapeInference:
 
     @classmethod
@@ -103,6 +117,7 @@ class ShapeInference:
             return
 
         in_shape = x.shape
+        assert in_shape is not None
         ndim = len(in_shape) - 2  # spatial dims (1D, 2D, or 3D)
         if ndim < 1:
             return
@@ -119,7 +134,7 @@ class ShapeInference:
 
         N = in_shape[0]
         # Compute output spatial dimensions
-        out_spatial = []
+        out_spatial = list() 
         for i in range(ndim):
             H_in = in_shape[2 + i]
             K = kernel_size[i]
@@ -426,7 +441,6 @@ class ShapeInference:
         return
 
 
-    # TODO: check. 
     @staticmethod
     def _infer_interpolate(n: Node) -> None:
         """
@@ -438,10 +452,11 @@ class ShapeInference:
         if not n.inputs:
             return
         x = n.inputs[0]
-        if x.shape is None:
+        if not _is_concrete_shape(x.shape):
             return
 
         in_shape = x.shape
+        assert in_shape is not None
         ndim = len(in_shape) - 2
         if ndim < 1:
             return
@@ -450,10 +465,13 @@ class ShapeInference:
         scale_factor = n.attrs.get("scale_factor")
 
         if size is not None:
+            # size may contain fx.Node for dynamic shapes - sanitize it
             if isinstance(size, int):
                 out_spatial = [size] * ndim
             else:
-                out_spatial = list(size)
+                out_spatial = _sanitize_shape(list(size))
+                if out_spatial is None:
+                    return  # dynamic size, cannot infer
         elif scale_factor is not None:
             if isinstance(scale_factor, (int, float)):
                 scale_factor = [scale_factor] * ndim

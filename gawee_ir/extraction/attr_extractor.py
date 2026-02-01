@@ -214,18 +214,36 @@ class AttrExtractor:
         return
 
 
+    @staticmethod
+    def _sanitize_size(size) -> Tuple[int, ...] | None:
+        """Convert size to tuple of ints. Return None if any dim is symbolic."""
+        if size is None:
+            return None
+        if isinstance(size, int):
+            return (size,)
+        result = []
+        for d in size:
+            if isinstance(d, int):
+                result.append(d)
+            else:
+                # Symbolic dimension (fx.Node, etc.) - size is dynamic
+                return None
+        return tuple(result)
+
     @classmethod
     def _extract_interpolate_func(cls, node: fx.Node):
         """
         F.interpolate(input, size=None, scale_factor=None, mode='nearest', ...)
         """
-        cls.attrs["op_type"] = INTERPOLATE 
+        cls.attrs["op_type"] = INTERPOLATE
 
-        # size
+        # size - may contain fx.Node for dynamic shapes, sanitize it
+        raw_size = None
         if len(node.args) > 1:
-            cls.attrs["size"] = node.args[1]
+            raw_size = node.args[1]
         else:
-            cls.attrs["size"] = node.kwargs.get("size", None)
+            raw_size = node.kwargs.get("size", None)
+        cls.attrs["size"] = cls._sanitize_size(raw_size)
 
         # scale_factor
         if len(node.args) > 2:
@@ -266,4 +284,8 @@ class AttrExtractor:
             "op": node.op,
         }
         cls._extract_call(node) 
+
+        print()
+        print(f'node -> {node}')
+        print(f'attrs -> {cls.attrs}')
         return cls.attrs 

@@ -101,6 +101,7 @@ def _numel(shape: List[int] | None) -> int | None:
         return None
     prod = 1
     for d in shape:
+        assert isinstance(d, int), f'[ERROR]: {d} should be int however, type of d is {type(d)}\ndir -> {dir(d)}'
         if d is None:
             return None
         if d < 0:
