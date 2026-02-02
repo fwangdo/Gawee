@@ -497,32 +497,70 @@ class TorchShapeAnalyzer:
     gm: fx.GraphModule
 
     @classmethod
-    def init(cls, gm: fx.GraphModule) -> None:
+    def init(cls, 
+             gm: fx.GraphModule, 
+             shape: Dict[str, DimType], 
+             dtype: Dict[str, str], 
+             ) -> None:
         cls.gm = gm
+        cls.shape = shape
+        cls.dtype = dtype
+        return 
 
     # -------------------- shape analysis --------------------
 
-    @classmethod
-    def _infer_getattr_shape(cls, node: fx.Node) -> DimType:
-        # TODO: implement - lookup parameter shape from cls.gm
-        pass
+    @classmethod                                                                                                                                                                                                                                                                                        
+    def _infer_getattr_shape(cls, node: fx.Node) -> DimType:                                                                                                                                                                                                                                            
+        """                                                                                                                                                                                                                                                                                             
+        getattr(obj, attr_name)                                                                                                                                                                                                                                                                         
+        - node.args[0]: the object (fx.Node or module)                                                                                                                                                                                                                                                  
+        - node.args[1]: attribute name (str)                                                                                                                                                                                                                                                            
+                                                                                                                                                                                                                                                                                                        
+        Cases:                                                                                                                                                                                                                                                                                          
+        1. getattr(tensor, "shape") → returns tuple, not tensor → None                                                                                                                                                                                                                                  
+        2. getattr(self, "weight") → returns parameter → lookup shape from gm                                                                                                                                                                                                                           
+        """                                                                                                                                                                                                                                                                                             
+        args = node.args                                                                                                                                                                                                                                                                                
+        obj, attr_name = args[0], args[1]                                                                                                                                                                                                                                                               
+        assert isinstance(obj, fx.Node), f'[ERROR]: obj should be in fx.Node but in {type(obj)}'
+        tm = obj.meta[TENSOR_META]
+        return tm.shape 
 
-    @classmethod
-    def _infer_getitem_shape(cls, node: fx.Node) -> DimType:
-        # TODO: implement - handle indexing result shape
-        pass
+    @classmethod                                                                                                                                                                                                                                                                                        
+    def _infer_getitem_shape(cls, node: fx.Node) -> DimType:                                                                                                                                                                                                                                            
+        '''
+        it means that the shape, which is return value, is the shape of node.args[0][node.args[1]]
+        The problem is I do not know a method how to get the value. 
+        '''
+        args = node.args
+        obj, idx = args[0], args[1]
+
+        assert isinstance(obj, fx.Node), f'[ERROR]: obj should be in fx.Node but in {type(obj)}'
+        obj_shape = cls.shape[obj.name]
+        # print(f'obj_shape -> {obj_shape}')
+        return obj_shape[idx] # type: ignore  
 
     # -------------------- dtype analysis --------------------
 
     @classmethod
-    def _infer_getattr_dtype(cls, node: fx.Node) -> str | None:
-        # TODO: implement - lookup parameter dtype from cls.gm
-        pass
+    def _infer_getattr_dtype(cls, node: fx.Node) -> str:
+        args = node.args                                                                                                                                                                                                                                                                                
+        obj, attr_name = args[0], args[1]                                                                                                                                                                                                                                                               
+        assert isinstance(obj, fx.Node), f'[ERROR]: obj should be in fx.Node but in {type(obj)}'
+        tm = obj.meta[TENSOR_META]
+        return tm.dtype
 
     @classmethod
-    def _infer_getitem_dtype(cls, node: fx.Node) -> str | None:
-        # TODO: implement - handle indexing result dtype
-        pass
+    def _infer_getitem_dtype(cls, node: fx.Node) -> str:
+        args = node.args
+        obj, idx = args[0], args[1]
+
+        assert isinstance(obj, fx.Node), f'[ERROR]: obj should be in fx.Node but in {type(obj)}'
+        # tm = obj.meta[TENSOR_META]
+        # print(f'node -> {node}, obj -> {obj}, idx -> {idx}')
+        obj_dtype = cls.dtype[obj.name]
+        # print(f'obj_dtype -> {obj_dtype}')
+        return obj_dtype 
 
     # -------------------- main entry points --------------------
 
@@ -538,7 +576,7 @@ class TorchShapeAnalyzer:
             raise NotImplementedError(f'[TorchShapeAnalyzer] shape inference for {op} not defined')
 
     @classmethod
-    def infer_dtype(cls, node: fx.Node) -> str | None:
+    def infer_dtype(cls, node: fx.Node) -> str:
         op = Mapper.translate(node, cls.gm)
 
         if op == GETATTR:

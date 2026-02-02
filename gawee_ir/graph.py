@@ -6,7 +6,7 @@ import numpy               as np
 import torch.fx            as fx 
 from gawee_ir.constant.ops import *
 
-DimType = List[int]
+DimType: TypeAlias = List[int]
 
 class Value:
 

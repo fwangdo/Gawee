@@ -42,12 +42,11 @@ class TorchParser:
         tm = node.meta.get(TENSOR_META)
         if tm is not None:
             shape = cls._to_shape(tm.shape)
-            # print(f'shape -> {shape}, type -> {type(shape)}')
         else:
-            # TODO we have to consider this based on each function. 
-            print(f'node -> {node}, meta -> {node.meta}')
-            shape = None
+            shape = TorchShapeAnalyzer.infer_shape(node)
         
+        if shape is not None:
+            cls.shape[node.name] = shape
         return shape 
 
         
@@ -57,8 +56,10 @@ class TorchParser:
         if tm is not None:
             dtype = cls._to_dtype(tm.dtype)
         else:
-            dtype = None
+            dtype = TorchShapeAnalyzer.infer_dtype(node) 
 
+        if dtype is not None:
+            cls.dtype[node.name] = dtype
         return dtype 
 
 
@@ -173,8 +174,14 @@ class TorchParser:
     ) -> Graph:
         cls.gm = gm
         AttrExtractor.init(gm)
+
         cls.g = Graph()
         cls.env = dict()
+
+        # to handle symbolic shapes. 
+        cls.shape = dict()
+        cls.dtype = dict()
+        TorchShapeAnalyzer.init(gm, cls.shape, cls.dtype)
 
         # shape propagation with concrete inputs
         from torch.fx.passes.shape_prop import ShapeProp
