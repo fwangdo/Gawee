@@ -25,3 +25,24 @@ build/
 .idea/
 .vscode/
 *.swp
+
+# MLIR / TableGen generated files
+middle/mlir/include/Gawee/generated/
+*.h.inc
+*.cpp.inc
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+.cmake/
+
+# Ninja
+.ninja_deps
+.ninja_log
+
+# Test outputs
+middle/mlir/test/*.tmp
+/test_output/
