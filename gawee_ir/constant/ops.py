@@ -41,3 +41,9 @@ CAT         = "cat"
 
 SHAPE = "shape"
 DTYPE = "dtype"
+
+# weight features. 
+WEIGHT = "weight" 
+BIAS = "bias" 
+RUNNING_MEAN = "running_mean"
+RUNNING_VAR = "running_var"

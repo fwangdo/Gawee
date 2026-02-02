@@ -8,11 +8,13 @@ import torch
 
 from gawee_ir.graph import Graph, Value, Node
 from gawee_ir.extraction.attr_extractor import AttrExtractor
+from gawee_ir.constant.ops import *
 
 JSON_TYPE: TypeAlias = str | bool | None | int | float | List["JSON_TYPE"] | Dict[str, "JSON_TYPE"]
 
 # Attributes that are weights/parameters and should be exported as binary.
-WEIGHT_ATTRS = {"weight", "bias", "running_mean", "running_var"}
+# WEIGHT_ATTRS = {"weight", "bias", "running_mean", "running_var"}
+WEIGHT_ATTRS = {WEIGHT, BIAS, RUNNING_MEAN, RUNNING_VAR}
 
 
 class Translator:
@@ -60,20 +62,30 @@ class Translator:
             "path": f"constants/{fname}",
         }
 
+    # serialization. 
+    def _check_is_need_attrs(self, key: str) -> bool:
+        """
+        Determine whether the information will be included in json or not. 
+        """
+        avoid = { "mod" }
+        return key not in avoid 
+
+    
+    def _serialize_tensor(self, key: str, val: torch.Tensor, node_name: str) -> JSON_TYPE:
+        arr = self._to_numpy(val)
+        weight_name = f"{node_name}_{key}_{self._weight_counter}"
+        self._weight_counter += 1
+        return self._export_tensor(arr, weight_name)
+
+
     def _serialize_attr(self, key: str, val: Any, node_name: str) -> JSON_TYPE:
         """Convert a single attribute value to JSON-serializable form."""
         # Handle torch.Tensor -> export as binary
-        if isinstance(val, torch.Tensor):
-            arr = self._to_numpy(val)
-            weight_name = f"{node_name}_{key}_{self._weight_counter}"
-            self._weight_counter += 1
-            return self._export_tensor(arr, weight_name)
+        # if not self._check_is_need_attrs(key):
+        #     return 
 
-        # Handle numpy array -> export as binary
-        if isinstance(val, np.ndarray):
-            weight_name = f"{node_name}_{key}_{self._weight_counter}"
-            self._weight_counter += 1
-            return self._export_tensor(val, weight_name)
+        if isinstance(val, torch.Tensor):
+            return self._serialize_tensor(key, val, node_name) 
 
         # Handle tuple -> convert to list
         if isinstance(val, tuple):
@@ -86,8 +98,10 @@ class Translator:
         # Handle list
         if isinstance(val, list):
             return [self._serialize_attr(key, item, node_name) for item in val]
+            # return [ val for val in lowered if val is not None ]
 
         # Fallback: convert to string
+        # raise Exception(f'[ERROR]: {type(val)} is not supported. key -> {key} / val -> {val}')
         return str(val)
 
     def _is_model_parameter(self, v: Value) -> bool:
@@ -137,9 +151,7 @@ class Translator:
         # Serialize attributes, exporting tensors as binary files.
         serialized_attrs: Dict[str, JSON_TYPE] = {}
         for key, val in raw_attrs.items():
-            if val is None and key in WEIGHT_ATTRS:
-                # Skip None weights/biases (e.g., conv without bias)
-                continue
+            assert val is not None, f'[ERROR]: value of {key} is None'
             serialized_attrs[key] = self._serialize_attr(key, val, n.raw_name)
 
         return {
@@ -151,6 +163,13 @@ class Translator:
         }
 
     # ---------- public ----------
+
+    def show_nodes(self) -> None:
+        print(f'\n\nNode information after lowering')
+        for node in self.nodes:
+            print(node)
+        return 
+
 
     def export(self, graph: Graph, fname: str = "graph.json") -> None:
         graph_input_names = {v.name for v in graph.inputs}
@@ -173,5 +192,6 @@ class Translator:
         with open(out_path, "w") as f:
             json.dump(graph_json, f, indent=2)
 
+        self.nodes = graph_json["nodes"]
         print(f"[LOG]: exported graph → {out_path}")
         return
