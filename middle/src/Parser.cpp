@@ -34,6 +34,7 @@ namespace gawee {
  * }
  */
 bool Parser::parseValue(const void* jsonPtr, Value& value) {
+    // static casting -> dereference. 
     const json& j = *static_cast<const json*>(jsonPtr);
 
     try {
@@ -125,14 +126,15 @@ bool Parser::parseNode(const void* jsonPtr, Node& node) {
         if (j.contains("attrs")) {
             const json& attrs = j["attrs"];
 
+            // The main part. TODO: we have to define more elaborately.
             for (auto it = attrs.begin(); it != attrs.end(); ++it) {
                 const std::string& key = it.key();
                 const json& val = it.value();
 
                 // Skip internal attributes
-                if (key == "target" || key == "op" || key == "mod" || key == "op_type") {
-                    continue;
-                }
+                // if (key == "target" || key == "op" || key == "mod" || key == "op_type") {
+                //     continue;
+                // }
 
                 // Determine attribute type and store appropriately
                 if (val.is_number_integer()) {
@@ -253,16 +255,18 @@ std::unique_ptr<Graph> Parser::load(const std::string& jsonPath) {
 // Template instantiation for common types
 template<>
 std::vector<float> WeightLoader::load(const std::string& path) {
+    // path by reading raw binary. 
     std::ifstream file(path, std::ios::binary);
+
     if (!file.is_open()) {
         std::cerr << "[WeightLoader] Cannot open: " << path << std::endl;
         return {};
     }
 
     // Get file size
-    file.seekg(0, std::ios::end);
-    size_t fileSize = file.tellg();
-    file.seekg(0, std::ios::beg);
+    file.seekg(0, std::ios::end); // move to the end. 
+    size_t fileSize = file.tellg(); //get size. 
+    file.seekg(0, std::ios::beg); // back to the begin. 
 
     // Calculate number of elements
     size_t numElements = fileSize / sizeof(float);

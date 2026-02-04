@@ -62,4 +62,30 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 ---
 
+## Preference in this project. 
+
+In this project, I am learning C++, MLIR, and compiler-related concepts
+with the goal of becoming a compiler engineer.
+I am still at an early stage and do not yet have strong foundations
+in these areas.
+
+To support my learning, whenever you generate code,
+please also provide the following documents:
+
+- **Summary**  
+  Explain what I need to understand in order to re-implement the code
+  on my own without your help.  
+  The goal is to give me the conceptual knowledge behind the code,
+  not just the final result.
+
+- **Quiz**  
+  Provide a quiz file with partially filled scaffolding
+  where I need to complete the missing parts.  
+  The goal of the quiz is to verify whether I understand the concepts
+  correctly and precisely.
+
+What I request above includes not only mlir but also build system and shell scripts. 
+
+--- 
+
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.

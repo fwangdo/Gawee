@@ -152,26 +152,28 @@ struct AddOpLowering : public OpConversionPattern<gawee::AddOp> {
     Location loc = op.getLoc();
 
     // Q3-1: Get lhs and rhs operands
-    Value lhs = ???;
-    Value rhs = ???;
+    Value lhs = adaptor.getLhs();
+    Value rhs = adaptor.getRhs();  
 
     // Q3-2: Get output type and create empty tensor
-    auto outputType = mlir::cast<RankedTensorType>(???.getType());
+    // you should use op instead of adaptor. Because adaptor can translate input which is translated already only. 
+    auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
+    // define output object. 
     Value output = rewriter.create<tensor::EmptyOp>(
-        loc, ???, ???
+        loc, outputType.getShape(), outputType.getElementType() 
     );
 
     // Q3-3: Create linalg.add
     auto addOp = rewriter.create<linalg::AddOp>(
         loc,
-        TypeRange{???},
-        ValueRange{???, ???},  // ins
-        ValueRange{???}        // outs
+        TypeRange{outputType},
+        ValueRange{lhs, rhs},  // ins
+        ValueRange{output}        // outs
     );
 
     // Q3-4: Replace and return
-    rewriter.???(op, addOp.getResults());
-    return ???;
+    rewriter.replaceOp(op, addOp.getResults());
+    return success();
   }
 };
 
@@ -192,19 +194,19 @@ struct GaweeToLinalgPass
     ConversionTarget target(*ctx);
 
     // Q4-2: Mark dialects as legal (can exist after conversion)
-    target.addLegalDialect<linalg::???>();
-    target.addLegalDialect<arith::???>();
-    target.addLegalDialect<tensor::???>();
+    target.addLegalDialect<linalg::LinalgDialect>();
+    target.addLegalDialect<arith::ArithDialect>();
+    target.addLegalDialect<tensor::TensorDialect>();
 
     // Q4-3: Mark Gawee dialect as illegal (must be converted)
-    target.add???Dialect<gawee::GaweeDialect>();
+    target.addIllegalDialect<gawee::GaweeDialect>();
 
     // Q4-4: Add patterns
     RewritePatternSet patterns(ctx);
-    patterns.add<???, ???, ???>(ctx);
+    patterns.add<ConvOpLowering, ReluOpLowering, AddOpLowering>(ctx);
 
     // Q4-5: Run conversion
-    if (failed(???(module, target, std::move(patterns)))) {
+    if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
       signalPassFailure();
     }
   }

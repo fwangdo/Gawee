@@ -34,7 +34,8 @@ struct Value {
     std::optional<std::string> path;     // Path to binary file (for constants)
 
     // Helper: Check if this value is a constant (has binary data)
-    bool isConstant() const { return path.has_value(); }
+    // has_value stands for avoiding nullopt. 
+    bool isConstant() const { return path.has_value(); } 
 
     // Helper: Get total number of elements
     int64_t numElements() const {
@@ -126,3 +127,9 @@ public:
 } // namespace gawee
 
 #endif // GAWEE_GRAPH_H
+
+/*
+ * learning point. 
+ * 1. class and struct are very similar in c++. If you want to maintain invaraint and dont want 
+ *     to allow change by external maninpulation, you might as well use "class". 
+*/
