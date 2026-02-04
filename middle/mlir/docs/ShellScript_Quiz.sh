@@ -13,7 +13,7 @@
 #===----------------------------------------------------------------------===#
 
 # Q1: What command makes the script stop immediately if any command fails?
-set -e 
+set -e
 
 # Q2: Get the directory where this script is located
 # Hint: $0 is the script path, dirname gets directory, pwd prints absolute path
@@ -25,7 +25,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 # Q4: Define LLVM installation path using home directory variable
 # Hint: $HOME is the home directory
-LLVM_DIR="$(HOME)/llvm-install"
+LLVM_DIR="$HOME/llvm-install"
 
 # Q5: Get the first command-line argument
 # Hint: $1 is first argument, $2 is second, etc.
@@ -36,7 +36,7 @@ INPUT="$1"
 if [ -z "$INPUT" ]; then
   echo "Usage: $0 <input.mlir>"
   # Q7: Exit with error code (non-zero = error)
-  exit 1  
+  exit 1 
 fi
 
 echo "=== Step 1: Gawee -> Linalg ==="
@@ -47,14 +47,14 @@ STEP1=$("$PROJECT_DIR/build/gawee-opt" --convert-gawee-to-linalg "$INPUT")
 
 # Q9: Print the STEP1 variable
 # Hint: echo with variable, use quotes
-??? "$STEP1"
+echo "$STEP1"
 
 echo ""
 echo "=== Step 2: Bufferize (tensor -> memref) ==="
 
 # Q10: Pipe STEP1 to mlir-opt for bufferization
 # Hint: echo "$VAR" | command
-STEP2=$(??? "$STEP1" ??? "$LLVM_DIR/bin/mlir-opt" --one-shot-bufferize="bufferize-function-boundaries")
+STEP2=$(echo "$STEP1" | "$LLVM_DIR/bin/mlir-opt" --one-shot-bufferize="bufferize-function-boundaries")
 
 echo "$STEP2"
 
@@ -62,7 +62,7 @@ echo ""
 echo "=== Step 3: Linalg -> SCF Loops ==="
 
 # Q11: Pipe STEP2 to mlir-opt for loop conversion
-STEP3=$(echo "$STEP2" | "$LLVM_DIR/bin/mlir-opt" ???)
+STEP3=$(echo "$STEP2" | "$LLVM_DIR/bin/mlir-opt" --convert-linalg-to-loops)
 
 echo "$STEP3"
 

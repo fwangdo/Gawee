@@ -72,13 +72,13 @@ D) VAR is a number
 #!/bin/bash
 set -e
 
-FILE="???"
+FILE="$1"
 
-if [ ??? "$FILE" ]; then
+if [ -n "$FILE" ]; then
   echo "Found: $FILE"
 else
   echo "Not found"
-  exit ???
+  exit 1 
 fi
 ```
 
@@ -92,7 +92,7 @@ fi
 INPUT="$1"
 OUTPUT="$2"
 
-??? "$INPUT" | ??? '[:lower:]' '[:upper:]' ??? "$OUTPUT"
+echo "$INPUT" | tr '[:lower:]' '[:upper:]' > "$OUTPUT"
 ```
 
 ---

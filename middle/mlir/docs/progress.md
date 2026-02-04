@@ -127,39 +127,62 @@ Gawee → Linalg(tensor) → Bufferize → Linalg(memref) → SCF loops
 
 ---
 
-## Phase 6: Loops → LLVM (Future)
+## Phase 6: C++ Graph → Gawee MLIR (Frontend Connection) 🔄 NEXT
+
+| Task | Status | Files |
+|------|--------|-------|
+| Create MLIREmitter class | ⬚ Todo | lib/Emit/MLIREmitter.cpp |
+| Emit gawee.conv from Graph::Node | ⬚ Todo | lib/Emit/MLIREmitter.cpp |
+| Emit gawee.relu from Graph::Node | ⬚ Todo | lib/Emit/MLIREmitter.cpp |
+| Emit gawee.add from Graph::Node | ⬚ Todo | lib/Emit/MLIREmitter.cpp |
+| Create gawee-translate tool | ⬚ Todo | tools/gawee-translate.cpp |
+| Test with subset of graph.json | ⬚ Todo | - |
+
+**Goal:** Bridge C++ Graph (from Parser.cpp) to Gawee MLIR.
+
+```
+JSON → Parser.cpp → Graph (C++) → MLIREmitter → gawee.mlir
+```
+
+**Scope:** Partial support (conv, relu, add only). Extension later.
+
+**Note:** The test .mlir files we used before were hand-written. This phase connects the real frontend.
+
+---
+
+## Phase 7: SCF → LLVM → Binary
 
 | Task | Status | Files |
 |------|--------|-------|
 | SCF to LLVM conversion | ⬚ Todo | - |
 | Arith to LLVM conversion | ⬚ Todo | - |
 | MemRef to LLVM conversion | ⬚ Todo | - |
+| LLVM dialect → LLVM IR | ⬚ Todo | - |
+| Test end-to-end execution | ⬚ Todo | - |
 
-**Goal:** Lower to LLVM dialect for code generation.
+**Goal:** Complete the lowering chain to executable code.
 
----
-
-## Phase 7: LLVM Backend (Future)
-
-| Task | Status | Files |
-|------|--------|-------|
-| LLVM IR generation | ⬚ Todo | - |
-| Target code generation | ⬚ Todo | - |
-| JIT execution | ⬚ Todo | - |
-
-**Goal:** Generate executable binary or run via JIT.
+```
+SCF loops → LLVM dialect → LLVM IR → Binary/JIT
+```
 
 ---
 
-## Phase 8: Frontend Connection (Future)
+## Phase 8: Extend for ResNet (User's Own Work)
 
 | Task | Status | Files |
 |------|--------|-------|
-| Parser → Gawee MLIR emission | ⬚ Todo | middle/src/Parser.cpp |
-| Model loading | ⬚ Todo | - |
-| End-to-end test | ⬚ Todo | - |
+| Add MaxPool op to dialect | ⬚ Todo | GaweeOps.td |
+| Add BatchNorm op to dialect | ⬚ Todo | GaweeOps.td |
+| Add bias support to conv | ⬚ Todo | GaweeOps.td |
+| Add padding support to conv | ⬚ Todo | GaweeOps.td |
+| Implement lowerings for new ops | ⬚ Todo | GaweeToLinalg.cpp |
+| Extend MLIREmitter for new ops | ⬚ Todo | MLIREmitter.cpp |
+| Full ResNet inference | ⬚ Todo | - |
 
-**Goal:** Connect existing frontend to MLIR pipeline.
+**Goal:** Full support for ResNet model. User will extend based on patterns learned.
+
+**Note:** This follows the same patterns as Phase 2-3. Repeat the process for each new op.
 
 ---
 
