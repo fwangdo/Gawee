@@ -49,6 +49,7 @@ namespace {
 struct ConvOpLowering : public OpConversionPattern<gawee::ConvOp> {
   using OpConversionPattern::OpConversionPattern;
 
+  // LogicalResult returns success() / failure()
   LogicalResult
   matchAndRewrite(gawee::ConvOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -70,17 +71,20 @@ struct ConvOpLowering : public OpConversionPattern<gawee::ConvOp> {
     Location loc = op.getLoc();
 
     // TODO: Get operands
-    // Value input = adaptor.getInput();
-    // Value weight = adaptor.getWeight();
+    Value input = adaptor.getInput();
+    Value weight = adaptor.getWeight();
 
     // TODO: Get attributes
-    // auto strides = op.getStrides();
-    // auto padding = op.getPadding();
+    auto strides = op.getStrides();
+    auto padding = op.getPadding();
 
     // TODO: Compute output shape and create empty output tensor
-    // auto outputType = op.getOutput().getType().cast<RankedTensorType>();
-    // Value output = rewriter.create<tensor::EmptyOp>(loc, outputType.getShape(), ...);
-
+    auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
+    Value output = rewriter.create<tensor::EmptyOp>(                                                                                                                                                                                                                                             
+        loc,                                                                                                                                                                                                                                                                                     
+        outputType.getShape(),                                                                                                                                                                                                                                                                   
+        outputType.getElementType()                                                                                                                                                                                                                                                              
+    );     
     // TODO: Create linalg.conv_2d
     // auto conv = rewriter.create<linalg::Conv2DNchwFchwOp>(
     //     loc, outputType, ValueRange{input, weight}, output, strides, dilations);

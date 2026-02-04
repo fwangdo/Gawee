@@ -4,159 +4,40 @@ Educational MLIR dialect for neural network IR.
 
 ---
 
-## Part 0: Before You Start
+## Part 0: Current Status
 
-### System Requirements
+### Already Completed
 
-| Item | Minimum | Recommended |
-|------|---------|-------------|
-| Disk Space | 30 GB | 50 GB |
-| RAM | 8 GB | 16 GB |
-| Build Time | 1-2 hours | - |
+- [x] LLVM/MLIR installed at `~/llvm-install/`
+- [x] TableGen files generated at `include/Gawee/generated/`
+- [ ] Environment variables (see Part 2)
+- [ ] Build Gawee MLIR library (see Part 4)
 
 ### Required Tools
 
-Check if you have these installed:
-
 ```bash
-# Check CMake (need 3.20+)
-cmake --version
-# If missing: brew install cmake
-
-# Check Ninja (faster than make)
-ninja --version
-# If missing: brew install ninja
-
-# Check Git
-git --version
-# If missing: brew install git
-
-# Check C++ compiler
-clang++ --version
-# macOS: comes with Xcode Command Line Tools
-# If missing: xcode-select --install
+# Verify these work:
+cmake --version        # Need 3.20+
+ninja --version        # Optional but faster
+clang++ --version      # C++ compiler
 ```
 
 ---
 
-## Part 1: Build LLVM/MLIR from Source
+## Part 1: LLVM/MLIR Installation
 
-### Step 1.1: Create workspace
+**Already installed at:** `~/llvm-install/`
 
-```bash
-# Create a dedicated directory (NOT inside Gawee project)
-mkdir -p ~/mlir-workspace
-cd ~/mlir-workspace
-```
-
-### Step 1.2: Clone LLVM repository
+### Verify installation
 
 ```bash
-# This downloads ~2GB, takes 5-15 minutes depending on network
-git clone --depth 1 https://github.com/llvm/llvm-project.git
+# Check mlir-opt works
+~/llvm-install/bin/mlir-opt --version
+# Expected: LLVM version 22.0.0git (or similar)
 
-# --depth 1 means shallow clone (only latest commit, saves disk space)
+# Check mlir-tblgen works
+~/llvm-install/bin/mlir-tblgen --help | head -3
 ```
-
-**Expected output:**
-```
-Cloning into 'llvm-project'...
-remote: Enumerating objects: ...
-Receiving objects: 100% ...
-```
-
-**Verify:**
-```bash
-ls llvm-project/mlir
-# Should show: CMakeLists.txt, include, lib, test, tools, ...
-```
-
-### Step 1.3: Create build directory
-
-```bash
-cd llvm-project
-mkdir build
-cd build
-```
-
-### Step 1.4: Configure with CMake
-
-```bash
-cmake -G Ninja ../llvm \
-  -DLLVM_ENABLE_PROJECTS=mlir \
-  -DLLVM_TARGETS_TO_BUILD="host" \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DLLVM_ENABLE_ASSERTIONS=ON \
-  -DCMAKE_C_COMPILER=clang \
-  -DCMAKE_CXX_COMPILER=clang++
-```
-
-**What each flag means:**
-| Flag | Purpose |
-|------|---------|
-| `-G Ninja` | Use Ninja build system (faster than make) |
-| `-DLLVM_ENABLE_PROJECTS=mlir` | Build MLIR (we don't need clang, lld, etc.) |
-| `-DLLVM_TARGETS_TO_BUILD="host"` | Only build for your CPU (saves time) |
-| `-DCMAKE_BUILD_TYPE=Release` | Optimized build (faster execution) |
-| `-DLLVM_ENABLE_ASSERTIONS=ON` | Keep assertions (helpful for debugging) |
-
-**Expected output (last few lines):**
-```
--- Configuring done
--- Generating done
--- Build files have been written to: /Users/xxx/mlir-workspace/llvm-project/build
-```
-
-**If you see errors:**
-| Error | Solution |
-|-------|----------|
-| `Could not find ninja` | `brew install ninja` |
-| `CMake version too old` | `brew upgrade cmake` |
-| `No C compiler found` | `xcode-select --install` |
-
-### Step 1.5: Build MLIR
-
-```bash
-# Build only MLIR tools (not all of LLVM)
-ninja mlir-opt mlir-tblgen mlir-cpu-runner
-
-# This takes 30-90 minutes. Go get coffee.
-# You'll see progress like: [1234/5678] Building CXX object...
-```
-
-**To use all CPU cores (faster but uses more memory):**
-```bash
-ninja -j$(sysctl -n hw.ncpu) mlir-opt mlir-tblgen mlir-cpu-runner
-```
-
-**If build fails with "out of memory":**
-```bash
-# Use fewer parallel jobs
-ninja -j4 mlir-opt mlir-tblgen mlir-cpu-runner
-```
-
-### Step 1.6: Verify the build
-
-```bash
-# Check mlir-opt exists and runs
-./bin/mlir-opt --version
-
-# Expected output:
-# LLVM (http://llvm.org/):
-#   LLVM version 19.x.x (or similar)
-#   Optimized build with assertions.
-```
-
-```bash
-# Check mlir-tblgen exists
-./bin/mlir-tblgen --help | head -5
-
-# Expected output:
-# USAGE: mlir-tblgen [options] <input file>
-# ...
-```
-
-**Congratulations!** MLIR is built. Now let's set up environment variables.
 
 ---
 
@@ -176,9 +57,9 @@ nano ~/.bashrc
 Add these lines at the end:
 ```bash
 # MLIR/LLVM environment
-export LLVM_BUILD_DIR="$HOME/mlir-workspace/llvm-project/build"
-export PATH="$LLVM_BUILD_DIR/bin:$PATH"
-export MLIR_DIR="$LLVM_BUILD_DIR/lib/cmake/mlir"
+export LLVM_INSTALL_DIR="$HOME/llvm-install"
+export PATH="$LLVM_INSTALL_DIR/bin:$PATH"
+export MLIR_DIR="$LLVM_INSTALL_DIR/lib/cmake/mlir"
 ```
 
 Save and exit (`Ctrl+X`, then `Y`, then `Enter` in nano).
@@ -194,20 +75,22 @@ source ~/.zshrc  # or ~/.bashrc
 ```bash
 # These should work from any directory now
 which mlir-opt
-# Expected: /Users/xxx/mlir-workspace/llvm-project/build/bin/mlir-opt
+# Expected: /Users/hdy/llvm-install/bin/mlir-opt
 
 which mlir-tblgen
-# Expected: /Users/xxx/mlir-workspace/llvm-project/build/bin/mlir-tblgen
+# Expected: /Users/hdy/llvm-install/bin/mlir-tblgen
 
 echo $MLIR_DIR
-# Expected: /Users/xxx/mlir-workspace/llvm-project/build/lib/cmake/mlir
+# Expected: /Users/hdy/llvm-install/lib/cmake/mlir
 ```
 
 ---
 
 ## Part 3: Generate Code from TableGen
 
-Now we work in the Gawee project.
+**Status: Already completed.** Files exist at `include/Gawee/generated/`.
+
+If you need to regenerate (after modifying `.td` files):
 
 ### Step 3.1: Navigate to mlir directory
 
@@ -215,7 +98,7 @@ Now we work in the Gawee project.
 cd /path/to/Gawee/middle/mlir
 ```
 
-### Step 3.2: Create output directory for generated files
+### Step 3.2: Create output directory (if needed)
 
 ```bash
 mkdir -p include/Gawee/generated
@@ -226,27 +109,29 @@ mkdir -p include/Gawee/generated
 ```bash
 # 3.3.1: Generate dialect declaration (.h.inc)
 mlir-tblgen --gen-dialect-decls \
-  -I $LLVM_BUILD_DIR/include \
+  -I $LLVM_INSTALL_DIR/include \
   include/Gawee/GaweeDialect.td \
   -o include/Gawee/generated/GaweeDialect.h.inc
 
 # 3.3.2: Generate dialect definition (.cpp.inc)
 mlir-tblgen --gen-dialect-defs \
-  -I $LLVM_BUILD_DIR/include \
+  -I $LLVM_INSTALL_DIR/include \
   include/Gawee/GaweeDialect.td \
   -o include/Gawee/generated/GaweeDialect.cpp.inc
 
 # 3.3.3: Generate op declarations
 mlir-tblgen --gen-op-decls \
-  -I $LLVM_BUILD_DIR/include \
+  -I $LLVM_INSTALL_DIR/include \
   -I include \
+  -I include/Gawee \
   include/Gawee/GaweeOps.td \
   -o include/Gawee/generated/GaweeOps.h.inc
 
 # 3.3.4: Generate op definitions
 mlir-tblgen --gen-op-defs \
-  -I $LLVM_BUILD_DIR/include \
+  -I $LLVM_INSTALL_DIR/include \
   -I include \
+  -I include/Gawee \
   include/Gawee/GaweeOps.td \
   -o include/Gawee/generated/GaweeOps.cpp.inc
 ```
@@ -469,20 +354,20 @@ find . -name "*.o" -delete
 ## File Structure After Setup
 
 ```
-~/mlir-workspace/
-└── llvm-project/
-    └── build/
-        └── bin/
-            ├── mlir-opt         # MLIR optimizer tool
-            ├── mlir-tblgen      # TableGen for MLIR
-            └── mlir-cpu-runner  # JIT execution
+~/llvm-install/              # Your LLVM/MLIR installation
+├── bin/
+│   ├── mlir-opt             # MLIR optimizer tool
+│   ├── mlir-tblgen          # TableGen for MLIR
+│   └── mlir-cpu-runner      # JIT execution
+├── include/                 # MLIR headers
+└── lib/cmake/mlir/          # CMake config
 
 Gawee/middle/mlir/
 ├── include/Gawee/
 │   ├── GaweeDialect.td
 │   ├── GaweeOps.td
 │   ├── GaweeDialect.h
-│   └── generated/           # Auto-generated
+│   └── generated/           # Auto-generated (already done)
 │       ├── GaweeDialect.h.inc
 │       ├── GaweeDialect.cpp.inc
 │       ├── GaweeOps.h.inc

@@ -41,6 +41,9 @@ def Gawee_Dialect : Dialect {
   // Short description
   let summary = "Gawee dialect for neural network graphs";
 
+  // Disable bytecode support (avoids missing header issues)
+  let usePropertiesForAttributes = 0;
+
   // Longer description
   let description = [{
     The Gawee dialect represents high-level neural network operations.
