@@ -27,43 +27,45 @@ struct ConvOpLowering : public OpConversionPattern<gawee::ConvOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
+  // adaptor -> already converted operand values. 
   matchAndRewrite(gawee::ConvOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
     // Q1-1: Get input and weight from adaptor
-    Value input = ???;
-    Value weight = ???;
+    Value input = adaptor.getInput();  
+    Value weight = adaptor.getWeight();   
 
     // Q1-2: Get strides and dilations as Attributes (not ArrayRef!)
     // Hint: use *Attr() suffix
-    auto strides = ???;
-    auto dilations = ???;
+    // attr should be got by op. 
+    auto strides = op.getStridesAttr();  
+    auto dilations = op.getDilationAttr();  
 
     // Q1-3: Get output type using mlir::cast
-    auto outputType = mlir::cast<???>(op.getOutput().getType());
+    auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
 
     // Q1-4: Create empty output tensor
     Value output = rewriter.create<tensor::EmptyOp>(
         loc,
-        ???,  // shape
-        ???   // element type
+        outputType.getShape(),  // shape
+        outputType.getElementType()  // element type
     );
 
     // Q1-5: Create linalg.conv_2d_nchw_fchw
     auto conv = rewriter.create<linalg::Conv2DNchwFchwOp>(
         loc,
-        ???,                    // result type
-        ValueRange{???, ???},   // ins: input, weight
-        ???,                    // outs: output
-        ???,                    // strides
-        ???                     // dilations
+        outputType,                    // result type
+        ValueRange{input, weight},   // ins: input, weight
+        output,                    // outs: output
+        strides,                    // strides
+        dilations                     // dilations
     );
 
     // Q1-6: Replace original op
-    rewriter.???(op, conv.getResults());
+    rewriter.replaceOp(op, conv.getResults());
 
-    return ???;
+    return success();
   }
 };
 
@@ -80,50 +82,55 @@ struct ReluOpLowering : public OpConversionPattern<gawee::ReluOp> {
     Location loc = op.getLoc();
 
     // Q2-1: Get input and its type
-    Value input = ???;
-    auto inputType = mlir::cast<RankedTensorType>(???.getType());
-    auto elementType = inputType.???();
-    int64_t rank = inputType.???();
+    Value input = adaptor.getInput();
+    auto inputType = mlir::cast<RankedTensorType>(input.getType());
+    auto elementType = inputType.getElementType(); // dtype. 
+    int64_t rank = inputType.getRank();
 
     // Q2-2: Create output tensor
     Value output = rewriter.create<tensor::EmptyOp>(
-        loc, ???, ???
+        loc,
+        inputType.getShape(),
+        elementType                                            
     );
 
     // Q2-3: Create identity indexing maps for elementwise operation
     // Hint: AffineMap::getMultiDimIdentityMap(rank, context)
     SmallVector<AffineMap, 2> indexingMaps(
-        ???,  // how many maps? (input + output)
-        AffineMap::???(rank, rewriter.getContext())
+        2,  // how many maps? (input + output)
+        AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext())
     );
 
     // Q2-4: Create iterator types (all parallel for elementwise)
+    // all independent. 
     SmallVector<utils::IteratorType> iteratorTypes(
-        ???,  // how many?
-        utils::IteratorType::???
+        rank, 
+        utils::IteratorType::parallel
     );
 
     // Q2-5: Create linalg.generic with body
     auto genericOp = rewriter.create<linalg::GenericOp>(
         loc,
-        TypeRange{???},           // result types
-        ValueRange{???},          // inputs
-        ValueRange{???},          // outputs
+        TypeRange{inputType},           // result types
+        ValueRange{input},          // inputs
+        ValueRange{output},          // outputs
         indexingMaps,
         iteratorTypes,
+        // rhs in each loop operation. It is the answer of calculation(in this case, relu. )  
         [&](OpBuilder &builder, Location loc, ValueRange args) {
-          Value inVal = args[???];  // which index is input?
+          Value inVal = args[0];  // 0 -> input, 1 -> output.  
 
           // Q2-6: Create zero constant
           Value zero = builder.create<arith::ConstantOp>(
-              loc, elementType, builder.???(elementType)
+              loc, elementType, builder.getZeroAttr(elementType)
           );
 
-          // Q2-7: Compute max(input, zero) - ReLU operation
-          Value result = builder.create<arith::???>(loc, inVal, zero);
+          // Q2-7: Compute max(input, zero) - ReLU operation 
+          // the essence. MaximumFOp is max opeartion for fp datatype.  
+          Value result = builder.create<arith::MaximumFOp>(loc, inVal, zero);
 
           // Q2-8: Yield result
-          builder.create<linalg::???>(loc, result);
+          builder.create<linalg::YieldOp>(loc, result); // YieldOp means return value. 
         }
     );
 
@@ -133,7 +140,7 @@ struct ReluOpLowering : public OpConversionPattern<gawee::ReluOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// Quiz 3: Add Lowering
+// Qud Lowering
 //===----------------------------------------------------------------------===//
 
 struct AddOpLowering : public OpConversionPattern<gawee::AddOp> {
