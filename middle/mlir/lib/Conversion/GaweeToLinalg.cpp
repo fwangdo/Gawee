@@ -221,6 +221,13 @@ struct GaweeToLinalgPass
     return "Lower Gawee dialect to Linalg dialect";
   }
 
+  // Declare dialects that this pass will produce ops from
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<linalg::LinalgDialect>();
+    registry.insert<arith::ArithDialect>();
+    registry.insert<tensor::TensorDialect>();
+  }
+
   void runOnOperation() override {
     // LEARNING: Conversion setup
     //

@@ -5,6 +5,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_compile_options(-Wno-reserved-user-defined-literal)
 
+# Match LLVM's RTTI setting (LLVM was built with RTTI disabled)
+if(NOT LLVM_ENABLE_RTTI)
+  add_compile_options(-fno-rtti)
+endif()
+
 #===----------------------------------------------------------------------===#
 # Find MLIR
 #===----------------------------------------------------------------------===#
@@ -60,4 +65,34 @@ target_link_libraries(GaweeConversion
   MLIRTensorDialect
   MLIRArithDialect
   MLIRTransforms
+)
+
+#===----------------------------------------------------------------------===#
+# gawee-opt Tool
+#===----------------------------------------------------------------------===#
+
+add_executable(gawee-opt
+  tools/gawee-opt.cpp
+)
+
+# Get proper LLVM library handling
+llvm_map_components_to_libnames(llvm_libs Support Core)
+
+target_link_libraries(gawee-opt
+  PRIVATE
+  GaweeDialect
+  GaweeConversion
+  MLIROptLib
+  MLIRParser
+  MLIRPass
+  MLIRRewrite
+  MLIRTransforms
+  MLIRTransformUtils
+  MLIRFuncDialect
+  MLIRLinalgDialect
+  MLIRTensorDialect
+  MLIRArithDialect
+  MLIRIR
+  MLIRSupport
+  ${llvm_libs}
 )

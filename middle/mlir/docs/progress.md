@@ -78,20 +78,30 @@ gawee.add   → linalg.add
 
 ---
 
-## Phase 4: gawee-opt Tool 🔄 IN PROGRESS
+## Phase 4: gawee-opt Tool ✅
 
 | Task | Status | Files |
 |------|--------|-------|
-| Create gawee-opt executable | ⬚ Todo | tools/gawee-opt.cpp |
-| Register dialects | ⬚ Todo | tools/gawee-opt.cpp |
-| Register passes | ⬚ Todo | tools/gawee-opt.cpp |
-| Update CMakeLists.txt | ⬚ Todo | CMakeLists.txt |
-| Test with sample IR | ⬚ Todo | test/conv_test.mlir |
+| Create gawee-opt executable | ✅ Done | tools/gawee-opt.cpp |
+| Register dialects | ✅ Done | tools/gawee-opt.cpp |
+| Register passes | ✅ Done | tools/gawee-opt.cpp |
+| Update CMakeLists.txt | ✅ Done | CMakeLists.txt |
+| Add RTTI fix | ✅ Done | CMakeLists.txt |
+| Add getDependentDialects | ✅ Done | lib/Conversion/GaweeToLinalg.cpp |
+| Test with sample IR | ✅ Done | test/simple_test.mlir |
+| Summary document | ✅ Done | docs/gawee-opt_Summary.md |
+| Quiz file | ✅ Done | docs/gawee-opt_Quiz.cpp |
 
-**Goal:** Create a tool to run passes on MLIR files:
+**Result:** Tool works correctly:
 ```bash
-./gawee-opt --convert-gawee-to-linalg input.mlir
+./build/gawee-opt --convert-gawee-to-linalg test/simple_test.mlir
 ```
+
+**Key learnings:**
+- Dialects must be registered in `DialectRegistry`
+- Passes must declare `getDependentDialects()` for dialects they create ops from
+- RTTI must be disabled (`-fno-rtti`) to match LLVM's build
+- `MlirOptMain` handles CLI, parsing, pass execution
 
 ---
 
