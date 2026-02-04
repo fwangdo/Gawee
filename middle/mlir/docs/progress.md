@@ -105,15 +105,25 @@ gawee.add   → linalg.add
 
 ---
 
-## Phase 5: Linalg → Loops (Future)
+## Phase 5: Linalg → Loops ✅
 
 | Task | Status | Files |
 |------|--------|-------|
-| Linalg to SCF conversion | ⬚ Todo | - |
-| Linalg to Affine conversion | ⬚ Todo | - |
-| Loop optimizations | ⬚ Todo | - |
+| Add SCF dialect to gawee-opt | ✅ Done | tools/gawee-opt.cpp |
+| Add bufferization support | ✅ Done | tools/gawee-opt.cpp |
+| Full pipeline script | ✅ Done | scripts/full_pipeline.sh |
+| Test all ops | ✅ Done | test/simple_test.mlir |
 
-**Goal:** Lower linalg ops to explicit loops (for/while).
+**Pipeline:**
+```
+Gawee → Linalg(tensor) → Bufferize → Linalg(memref) → SCF loops
+```
+
+**Key learnings:**
+- Linalg-to-loops works on memref, not tensor - need bufferization first
+- Bufferization converts tensor → memref (memory allocation)
+- MLIR provides built-in passes: `--one-shot-bufferize`, `--convert-linalg-to-loops`
+- Complex ops like conv2d become 7 nested loops
 
 ---
 

@@ -90,8 +90,13 @@ target_link_libraries(gawee-opt
   MLIRTransformUtils
   MLIRFuncDialect
   MLIRLinalgDialect
+  MLIRLinalgTransforms
   MLIRTensorDialect
   MLIRArithDialect
+  MLIRSCFDialect
+  MLIRMemRefDialect
+  MLIRBufferizationDialect
+  MLIRBufferizationTransforms
   MLIRIR
   MLIRSupport
   ${llvm_libs}
