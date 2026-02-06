@@ -92,11 +92,66 @@ target_link_libraries(gawee-opt
   MLIRLinalgDialect
   MLIRLinalgTransforms
   MLIRTensorDialect
+  MLIRTensorTransforms
   MLIRArithDialect
+  MLIRArithTransforms
   MLIRSCFDialect
   MLIRMemRefDialect
   MLIRBufferizationDialect
   MLIRBufferizationTransforms
+  # LLVM dialect and conversions (Phase 7)
+  MLIRLLVMDialect
+  MLIRArithToLLVM
+  MLIRControlFlowToLLVM
+  MLIRFuncToLLVM
+  MLIRMemRefToLLVM
+  MLIRSCFToControlFlow
+  MLIRReconcileUnrealizedCasts
+  MLIRIR
+  MLIRSupport
+  ${llvm_libs}
+)
+
+#===----------------------------------------------------------------------===#
+# Emitter Library (JSON -> MLIR)
+#===----------------------------------------------------------------------===#
+
+add_library(GaweeEmit
+  lib/Emit/MLIREmitter.cpp
+)
+
+target_include_directories(GaweeEmit
+  PUBLIC
+  ${CMAKE_SOURCE_DIR}/include
+)
+
+target_link_libraries(GaweeEmit
+  PUBLIC
+  GaweeDialect
+  MLIRFuncDialect
+  MLIRArithDialect
+  MLIRLinalgDialect
+  MLIRTensorDialect
+  MLIRIR
+  MLIRSupport
+)
+
+#===----------------------------------------------------------------------===#
+# gawee-translate Tool (JSON -> MLIR)
+#===----------------------------------------------------------------------===#
+
+add_executable(gawee-translate
+  tools/gawee-translate.cpp
+)
+
+target_link_libraries(gawee-translate
+  PRIVATE
+  GaweeEmit
+  GaweeDialect
+  MLIRFuncDialect
+  MLIRArithDialect
+  MLIRLinalgDialect
+  MLIRTensorDialect
   MLIRIR
   MLIRSupport
   ${llvm_libs}

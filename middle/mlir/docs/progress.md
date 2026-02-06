@@ -127,44 +127,63 @@ Gawee → Linalg(tensor) → Bufferize → Linalg(memref) → SCF loops
 
 ---
 
-## Phase 6: C++ Graph → Gawee MLIR (Frontend Connection) 🔄 NEXT
+## Phase 6: C++ Graph → Gawee MLIR (Frontend Connection) ✅
 
 | Task | Status | Files |
 |------|--------|-------|
-| Create MLIREmitter class | ⬚ Todo | lib/Emit/MLIREmitter.cpp |
-| Emit gawee.conv from Graph::Node | ⬚ Todo | lib/Emit/MLIREmitter.cpp |
-| Emit gawee.relu from Graph::Node | ⬚ Todo | lib/Emit/MLIREmitter.cpp |
-| Emit gawee.add from Graph::Node | ⬚ Todo | lib/Emit/MLIREmitter.cpp |
-| Create gawee-translate tool | ⬚ Todo | tools/gawee-translate.cpp |
-| Test with subset of graph.json | ⬚ Todo | - |
+| Create MLIREmitter class | ✅ Done | include/Emit/MLIREmitter.h, lib/Emit/MLIREmitter.cpp |
+| Emit gawee.conv from Graph::Node | ✅ Done | lib/Emit/MLIREmitter.cpp |
+| Emit gawee.relu from Graph::Node | ✅ Done | lib/Emit/MLIREmitter.cpp |
+| Emit gawee.add from Graph::Node | ✅ Done | lib/Emit/MLIREmitter.cpp |
+| Create gawee-translate tool | ✅ Done | tools/gawee-translate.cpp |
+| Test with subset of graph.json | ✅ Done | test/subset_graph.json |
+| Summary document | ✅ Done | docs/MLIREmitter_Summary.md |
+| Quiz file | ✅ Done | docs/MLIREmitter_Quiz.cpp |
+| Build and test | ✅ Done | - |
 
-**Goal:** Bridge C++ Graph (from Parser.cpp) to Gawee MLIR.
-
+**Result:** Full pipeline works:
+```bash
+./build/gawee-translate test/subset_graph.json | ./build/gawee-opt --convert-gawee-to-linalg
 ```
-JSON → Parser.cpp → Graph (C++) → MLIREmitter → gawee.mlir
-```
 
-**Scope:** Partial support (conv, relu, add only). Extension later.
-
-**Note:** The test .mlir files we used before were hand-written. This phase connects the real frontend.
+**Key learnings:**
+- `mlir-translate` converts external formats ↔ MLIR
+- `OpBuilder` creates ops at current insertion point
+- Value mapping connects JSON string names to `mlir::Value`
+- LLVM JSON API uses Optional returns - always check validity
+- Topological order ensures inputs are defined before use
+- Weights must be function arguments (constant tensors can't bufferize)
 
 ---
 
-## Phase 7: SCF → LLVM → Binary
+## Phase 7: SCF → LLVM → Binary ✅
 
 | Task | Status | Files |
 |------|--------|-------|
-| SCF to LLVM conversion | ⬚ Todo | - |
-| Arith to LLVM conversion | ⬚ Todo | - |
-| MemRef to LLVM conversion | ⬚ Todo | - |
-| LLVM dialect → LLVM IR | ⬚ Todo | - |
-| Test end-to-end execution | ⬚ Todo | - |
+| SCF to CF conversion | ✅ Done | tools/gawee-opt.cpp |
+| Arith to LLVM conversion | ✅ Done | tools/gawee-opt.cpp |
+| MemRef to LLVM conversion | ✅ Done | tools/gawee-opt.cpp |
+| CF to LLVM conversion | ✅ Done | tools/gawee-opt.cpp |
+| Func to LLVM conversion | ✅ Done | tools/gawee-opt.cpp |
+| LLVM dialect → LLVM IR script | ✅ Done | scripts/to_llvm_ir.sh |
+| Test file | ✅ Done | test/llvm_test.mlir |
+| Summary document | ✅ Done | docs/LLVMLowering_Summary.md |
+| Quiz file | ✅ Done | docs/LLVMLowering_Quiz.cpp |
 
-**Goal:** Complete the lowering chain to executable code.
+**Result:** Full pipeline to LLVM IR works:
+```bash
+./build/gawee-opt --scf-to-llvm test/llvm_test.mlir
+./scripts/to_llvm_ir.sh test/llvm_test.mlir output.ll
+```
 
-```
-SCF loops → LLVM dialect → LLVM IR → Binary/JIT
-```
+**Key learnings:**
+- Lowering is hierarchical: High-level → Mid-level → Low-level → Target
+- SCF (for/while) → CF (branches) via `scf-to-cf` pass
+- MemRef → LLVM struct with pointer, offset, sizes, strides
+- Multiple conversion passes needed, order matters
+- `reconcile-unrealized-casts` cleans up temporary markers
+- `mlir-translate --mlir-to-llvmir` converts LLVM dialect to LLVM IR
+- **Bufferization interfaces must be registered** for each dialect (arith, linalg, tensor, func)
 
 ---
 
@@ -194,24 +213,43 @@ middle/mlir/
 ├── build.sh                 # Build script
 ├── .clangd                  # IDE configuration
 ├── include/
-│   └── Gawee/
-│       ├── GaweeDialect.td  # Dialect TableGen
-│       ├── GaweeDialect.h   # Dialect C++ header
-│       ├── GaweeOps.td      # Ops TableGen
-│       └── generated/       # Generated .inc files
+│   ├── Gawee/
+│   │   ├── GaweeDialect.td  # Dialect TableGen
+│   │   ├── GaweeDialect.h   # Dialect C++ header
+│   │   ├── GaweeOps.td      # Ops TableGen
+│   │   └── generated/       # Generated .inc files
+│   └── Emit/
+│       └── MLIREmitter.h    # JSON→MLIR emitter header
 ├── lib/
 │   ├── Gawee/
 │   │   └── GaweeDialect.cpp # Dialect implementation
-│   └── Conversion/
-│       └── GaweeToLinalg.cpp # Conversion pass
-├── tools/                   # (to create)
-│   └── gawee-opt.cpp        # Optimizer tool
-├── test/                    # (to create)
-│   └── *.mlir               # Test files
+│   ├── Conversion/
+│   │   └── GaweeToLinalg.cpp # Conversion pass
+│   └── Emit/
+│       └── MLIREmitter.cpp  # JSON→MLIR emitter implementation
+├── tools/
+│   ├── gawee-opt.cpp        # Optimizer tool (incl. LLVM lowering)
+│   └── gawee-translate.cpp  # Translator tool (JSON→MLIR)
+├── scripts/
+│   ├── full_pipeline.sh     # Gawee → Loops pipeline
+│   └── to_llvm_ir.sh        # MLIR → LLVM IR pipeline
+├── test/
+│   ├── simple_test.mlir     # Test file (hand-written Gawee)
+│   ├── llvm_test.mlir       # Test file for LLVM lowering
+│   └── subset_graph.json    # Test JSON for translator
 └── docs/
     ├── progress.md          # This file
+    ├── todo.md              # Study checklist
     ├── GaweeToLinalg_Summary.md
-    └── GaweeToLinalg_Quiz.cpp
+    ├── GaweeToLinalg_Quiz.cpp
+    ├── gawee-opt_Summary.md
+    ├── gawee-opt_Quiz.cpp
+    ├── LinalgToLoops_Summary.md
+    ├── LinalgToLoops_Quiz.md
+    ├── MLIREmitter_Summary.md
+    ├── MLIREmitter_Quiz.cpp
+    ├── LLVMLowering_Summary.md
+    └── LLVMLowering_Quiz.cpp
 ```
 
 ---
@@ -222,9 +260,24 @@ middle/mlir/
 # Build everything
 ./build.sh
 
-# After gawee-opt is created:
+# gawee-opt: Transform MLIR
 ./build/gawee-opt --help
-./build/gawee-opt --convert-gawee-to-linalg test/input.mlir
+./build/gawee-opt --convert-gawee-to-linalg test/simple_test.mlir
+./build/gawee-opt --gawee-to-loops test/simple_test.mlir
+./build/gawee-opt --scf-to-llvm test/llvm_test.mlir
+
+# gawee-translate: JSON → MLIR
+./build/gawee-translate test/subset_graph.json
+./build/gawee-translate test/subset_graph.json -o output.mlir
+
+# Full pipeline: JSON → MLIR → Linalg
+./build/gawee-translate test/subset_graph.json | ./build/gawee-opt --convert-gawee-to-linalg
+
+# Full pipeline: JSON → MLIR → LLVM dialect
+./build/gawee-translate test/subset_graph.json | ./build/gawee-opt --gawee-to-llvm
+
+# Full pipeline: MLIR → LLVM IR
+./scripts/to_llvm_ir.sh test/llvm_test.mlir output.ll
 ```
 
 ---

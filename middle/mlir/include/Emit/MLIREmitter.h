@@ -31,6 +31,8 @@ namespace mlir::gawee {
 ///
 class MLIREmitter {
 public:
+  // explicit does not allow implicit conversion like A a -> A(a) 
+  // constructor. 
   explicit MLIREmitter(MLIRContext *context);
 
   /// Emit MLIR module from JSON graph.
@@ -47,6 +49,12 @@ private:
 
   /// Maps value name (e.g., "conv1") -> MLIR Value
   std::unordered_map<std::string, Value> valueMap;
+
+  /// Weight tensors to add as function arguments (name, type)
+  std::vector<std::pair<std::string, RankedTensorType>> weightArgs;
+
+  /// Index for tracking which weight argument to use next
+  size_t weightArgIndex = 0;
 
   /// Parse shape array from JSON and create RankedTensorType.
   RankedTensorType parseShape(const llvm::json::Array *shape);

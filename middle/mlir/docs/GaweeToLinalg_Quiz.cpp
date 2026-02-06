@@ -3,7 +3,9 @@
 //===----------------------------------------------------------------------===//
 //
 // Fill in the blanks (marked with ???) to complete the conversion pass.
-// After completing, compare with lib/Conversion/GaweeToLinalg.cpp
+// This mirrors the actual structure of lib/Conversion/GaweeToLinalg.cpp
+//
+// After completing, compare with the real implementation.
 //
 //===----------------------------------------------------------------------===//
 
@@ -20,57 +22,75 @@ using namespace mlir;
 namespace {
 
 //===----------------------------------------------------------------------===//
-// Quiz 1: Conv2D Lowering
+// Q1: Conv2D Lowering (with zero-initialization!)
 //===----------------------------------------------------------------------===//
+//
+// IMPORTANT: Conv is a reduction op - it accumulates into output.
+// Output MUST be zero-initialized for correct results AND bufferization.
+//
 
 struct ConvOpLowering : public OpConversionPattern<gawee::ConvOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
-  // adaptor -> already converted operand values. 
   matchAndRewrite(gawee::ConvOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    // Q1-1: Get input and weight from adaptor
-    Value input = adaptor.getInput();  
-    Value weight = adaptor.getWeight();   
+    // Q1a: Get input and weight from adaptor
+    Value input = adaptor.???();
+    Value weight = adaptor.???();
 
-    // Q1-2: Get strides and dilations as Attributes (not ArrayRef!)
-    // Hint: use *Attr() suffix
-    // attr should be got by op. 
-    auto strides = op.getStridesAttr();  
-    auto dilations = op.getDilationAttr();  
+    // Q1b: Get strides and dilations as Attributes
+    // HINT: Use *Attr() suffix to get the attribute
+    auto strides = op.???();
+    auto dilations = op.???();
 
-    // Q1-3: Get output type using mlir::cast
-    auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
+    // Q1c: Get output type
+    auto outputType = mlir::cast<???>(op.getOutput().getType());
+    auto elementType = outputType.???();
 
-    // Q1-4: Create empty output tensor
-    Value output = rewriter.create<tensor::EmptyOp>(
-        loc,
-        outputType.getShape(),  // shape
-        outputType.getElementType()  // element type
+    // Q1d: Create empty output tensor
+    // HINT: tensor::EmptyOp::create(rewriter, loc, shape, elementType)
+    Value emptyTensor = tensor::EmptyOp::create(
+        rewriter, loc,
+        outputType.???(),
+        elementType
     );
 
-    // Q1-5: Create linalg.conv_2d_nchw_fchw
-    auto conv = rewriter.create<linalg::Conv2DNchwFchwOp>(
-        loc,
-        outputType,                    // result type
-        ValueRange{input, weight},   // ins: input, weight
-        output,                    // outs: output
-        strides,                    // strides
-        dilations                     // dilations
+    // Q1e: Create zero constant for initialization
+    // HINT: arith::ConstantOp::create(rewriter, loc, type, zeroAttr)
+    Value zero = arith::ConstantOp::create(
+        rewriter, loc,
+        elementType,
+        rewriter.???(elementType)
     );
 
-    // Q1-6: Replace original op
-    rewriter.replaceOp(op, conv.getResults());
+    // Q1f: Fill output with zeros using linalg.fill
+    // WHY? Conv accumulates into output, so must start at zero
+    // HINT: linalg::FillOp::create(rewriter, loc, fillValue, destTensor)
+    Value output = linalg::FillOp::create(rewriter, loc, ???, ???)
+                       .getResult(0);
+
+    // Q1g: Create linalg.conv_2d_nchw_fchw
+    auto conv = linalg::Conv2DNchwFchwOp::create(
+        rewriter, loc,
+        outputType,
+        ValueRange{???, ???},  // ins: input, weight
+        ???,                    // outs: zero-initialized output
+        strides,
+        dilations
+    );
+
+    // Q1h: Replace original op
+    rewriter.???(op, conv.getResults());
 
     return success();
   }
 };
 
 //===----------------------------------------------------------------------===//
-// Quiz 2: ReLU Lowering (harder)
+// Q2: ReLU Lowering (using linalg.generic)
 //===----------------------------------------------------------------------===//
 
 struct ReluOpLowering : public OpConversionPattern<gawee::ReluOp> {
@@ -81,56 +101,55 @@ struct ReluOpLowering : public OpConversionPattern<gawee::ReluOp> {
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    // Q2-1: Get input and its type
-    Value input = adaptor.getInput();
+    // Q2a: Get input and its properties
+    Value input = adaptor.???();
     auto inputType = mlir::cast<RankedTensorType>(input.getType());
-    auto elementType = inputType.getElementType(); // dtype. 
-    int64_t rank = inputType.getRank();
+    auto elementType = inputType.???();
+    int64_t rank = inputType.???();
 
-    // Q2-2: Create output tensor
+    // Q2b: Create output tensor (same shape as input)
     Value output = rewriter.create<tensor::EmptyOp>(
         loc,
-        inputType.getShape(),
-        elementType                                            
+        inputType.???(),
+        ???
     );
 
-    // Q2-3: Create identity indexing maps for elementwise operation
-    // Hint: AffineMap::getMultiDimIdentityMap(rank, context)
+    // Q2c: Create identity indexing maps for elementwise operation
+    // HINT: Both input and output use the same identity map
     SmallVector<AffineMap, 2> indexingMaps(
-        2,  // how many maps? (input + output)
+        ???,  // How many maps? (1 input + 1 output)
         AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext())
     );
 
-    // Q2-4: Create iterator types (all parallel for elementwise)
-    // all independent. 
+    // Q2d: Create iterator types (all parallel for elementwise)
     SmallVector<utils::IteratorType> iteratorTypes(
-        rank, 
-        utils::IteratorType::parallel
+        rank,
+        utils::IteratorType::???
     );
 
-    // Q2-5: Create linalg.generic with body
+    // Q2e: Create linalg.generic with body
     auto genericOp = rewriter.create<linalg::GenericOp>(
         loc,
-        TypeRange{inputType},           // result types
-        ValueRange{input},          // inputs
-        ValueRange{output},          // outputs
+        TypeRange{inputType},
+        ValueRange{???},    // inputs
+        ValueRange{???},    // outputs
         indexingMaps,
         iteratorTypes,
-        // rhs in each loop operation. It is the answer of calculation(in this case, relu. )  
+        // Body builder lambda
         [&](OpBuilder &builder, Location loc, ValueRange args) {
-          Value inVal = args[0];  // 0 -> input, 1 -> output.  
+          // args[0] = input element, args[1] = output element (unused)
+          Value inVal = args[???];
 
-          // Q2-6: Create zero constant
+          // Q2f: Create zero constant
           Value zero = builder.create<arith::ConstantOp>(
-              loc, elementType, builder.getZeroAttr(elementType)
+              loc, elementType, builder.???(elementType)
           );
 
-          // Q2-7: Compute max(input, zero) - ReLU operation 
-          // the essence. MaximumFOp is max opeartion for fp datatype.  
-          Value result = builder.create<arith::MaximumFOp>(loc, inVal, zero);
+          // Q2g: Compute max(input, zero) - this is ReLU!
+          Value result = builder.create<arith::???>(loc, inVal, zero);
 
-          // Q2-8: Yield result
-          builder.create<linalg::YieldOp>(loc, result); // YieldOp means return value. 
+          // Q2h: Yield result
+          builder.create<linalg::???>(loc, result);
         }
     );
 
@@ -140,7 +159,7 @@ struct ReluOpLowering : public OpConversionPattern<gawee::ReluOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// Qud Lowering
+// Q3: Add Lowering (using linalg.add)
 //===----------------------------------------------------------------------===//
 
 struct AddOpLowering : public OpConversionPattern<gawee::AddOp> {
@@ -151,34 +170,37 @@ struct AddOpLowering : public OpConversionPattern<gawee::AddOp> {
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    // Q3-1: Get lhs and rhs operands
-    Value lhs = adaptor.getLhs();
-    Value rhs = adaptor.getRhs();  
+    // Q3a: Get lhs and rhs from adaptor
+    Value lhs = adaptor.???();
+    Value rhs = adaptor.???();
 
-    // Q3-2: Get output type and create empty tensor
-    // you should use op instead of adaptor. Because adaptor can translate input which is translated already only. 
-    auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
-    // define output object. 
+    // Q3b: Get output type (from op, not adaptor!)
+    // WHY from op? adaptor only has converted inputs, not output type
+    auto outputType = mlir::cast<RankedTensorType>(op.???().getType());
+
+    // Q3c: Create empty output tensor
     Value output = rewriter.create<tensor::EmptyOp>(
-        loc, outputType.getShape(), outputType.getElementType() 
+        loc,
+        outputType.getShape(),
+        outputType.???()
     );
 
-    // Q3-3: Create linalg.add
+    // Q3d: Create linalg.add
     auto addOp = rewriter.create<linalg::AddOp>(
         loc,
-        TypeRange{outputType},
-        ValueRange{lhs, rhs},  // ins
-        ValueRange{output}        // outs
+        TypeRange{???},
+        ValueRange{???, ???},  // ins: lhs, rhs
+        ValueRange{???}        // outs: output
     );
 
-    // Q3-4: Replace and return
-    rewriter.replaceOp(op, addOp.getResults());
-    return success();
+    // Q3e: Replace and return
+    rewriter.???(op, addOp.???());
+    return ???();
   }
 };
 
 //===----------------------------------------------------------------------===//
-// Quiz 4: Pass Definition
+// Q4: Pass Definition
 //===----------------------------------------------------------------------===//
 
 struct GaweeToLinalgPass
@@ -186,27 +208,41 @@ struct GaweeToLinalgPass
 
   StringRef getArgument() const override { return "convert-gawee-to-linalg"; }
 
+  StringRef getDescription() const override {
+    return "Lower Gawee dialect to Linalg dialect";
+  }
+
+  // Q4a: Declare dialects that this pass will CREATE ops from
+  // WHY? MLIR needs to load these dialects before the pass runs
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<???>();  // linalg ops
+    registry.insert<???>();  // arith.constant
+    registry.insert<???>();  // tensor.empty
+  }
+
   void runOnOperation() override {
     MLIRContext *ctx = &getContext();
     ModuleOp module = getOperation();
 
-    // Q4-1: Create conversion target
+    // Q4b: Create conversion target
     ConversionTarget target(*ctx);
 
-    // Q4-2: Mark dialects as legal (can exist after conversion)
-    target.addLegalDialect<linalg::LinalgDialect>();
-    target.addLegalDialect<arith::ArithDialect>();
-    target.addLegalDialect<tensor::TensorDialect>();
+    // Q4c: Mark dialects as legal (output dialects)
+    target.???<linalg::LinalgDialect>();
+    target.???<arith::ArithDialect>();
+    target.???<tensor::TensorDialect>();
 
-    // Q4-3: Mark Gawee dialect as illegal (must be converted)
-    target.addIllegalDialect<gawee::GaweeDialect>();
+    // Q4d: Mark Gawee dialect as illegal (must be converted away)
+    target.???<gawee::GaweeDialect>();
 
-    // Q4-4: Add patterns
+    // Q4e: Collect patterns
     RewritePatternSet patterns(ctx);
-    patterns.add<ConvOpLowering, ReluOpLowering, AddOpLowering>(ctx);
+    patterns.add<???>(ctx);
+    patterns.add<???>(ctx);
+    patterns.add<???>(ctx);
 
-    // Q4-5: Run conversion
-    if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
+    // Q4f: Run conversion
+    if (failed(???(module, target, std::move(patterns)))) {
       signalPassFailure();
     }
   }
@@ -215,33 +251,82 @@ struct GaweeToLinalgPass
 } // namespace
 
 //===----------------------------------------------------------------------===//
-// Answer Key (don't peek until you've tried!)
+// Q5: Pass Creation Function
+//===----------------------------------------------------------------------===//
+
+namespace mlir::gawee {
+std::unique_ptr<Pass> createGaweeToLinalgPass() {
+  return std::make_unique<???>();
+}
+}
+
+//===----------------------------------------------------------------------===//
+// Q6: Conceptual Questions
+//===----------------------------------------------------------------------===//
+//
+// Q6a: Why do we zero-initialize the conv output with linalg.fill?
+//      A) For better performance
+//      B) Conv is a reduction op that accumulates - must start at zero
+//      C) MLIR requires it
+//      D) It's optional
+//
+// Q6b: What's the difference between adaptor and op in matchAndRewrite?
+//      A) No difference
+//      B) adaptor has converted operands, op has original attributes
+//      C) adaptor has attributes, op has operands
+//      D) op is for input, adaptor is for output
+//
+// Q6c: Why use linalg.generic for ReLU instead of a named op?
+//      A) linalg.generic is faster
+//      B) There's no named linalg op for ReLU
+//      C) Named ops don't support f32
+//      D) Generic is easier to write
+//
+// Q6d: What does addIllegalDialect do?
+//      A) Prevents the dialect from being used
+//      B) Marks all ops from that dialect as illegal - must be converted
+//      C) Deletes the dialect
+//      D) Throws an error if dialect is present
+//
+
+//===----------------------------------------------------------------------===//
+// Answer Key
 //===----------------------------------------------------------------------===//
 /*
-Q1-1: adaptor.getInput(), adaptor.getWeight()
-Q1-2: op.getStridesAttr(), op.getDilationAttr()
-Q1-3: RankedTensorType
-Q1-4: outputType.getShape(), outputType.getElementType()
-Q1-5: outputType, input, weight, output, strides, dilations
-Q1-6: replaceOp, success()
+Q1a: getInput, getWeight
+Q1b: getStridesAttr, getDilationAttr
+Q1c: RankedTensorType, getElementType
+Q1d: getShape
+Q1e: getZeroAttr
+Q1f: zero, emptyTensor
+Q1g: input, weight, output
+Q1h: replaceOp
 
-Q2-1: adaptor.getInput(), input, getElementType(), getRank()
-Q2-2: inputType.getShape(), elementType
-Q2-3: 2, getMultiDimIdentityMap
-Q2-4: rank, parallel
-Q2-5: inputType, input, output
-Q2-6: 0, getZeroAttr
-Q2-7: MaximumFOp
-Q2-8: YieldOp
+Q2a: getInput, getElementType, getRank
+Q2b: getShape, elementType
+Q2c: 2
+Q2d: parallel
+Q2e: input, output
+Q2f: 0, getZeroAttr
+Q2g: MaximumFOp
+Q2h: YieldOp
 
-Q3-1: adaptor.getLhs(), adaptor.getRhs()
-Q3-2: op.getOutput(), outputType.getShape(), outputType.getElementType()
-Q3-3: outputType, lhs, rhs, output
-Q3-4: replaceOp, success()
+Q3a: getLhs, getRhs
+Q3b: getOutput
+Q3c: getElementType
+Q3d: outputType, lhs, rhs, output
+Q3e: replaceOp, getResults, success
 
-Q4-1: (already done)
-Q4-2: LinalgDialect, ArithDialect, TensorDialect
-Q4-3: addIllegal
-Q4-4: ConvOpLowering, ReluOpLowering, AddOpLowering
-Q4-5: applyPartialConversion
+Q4a: linalg::LinalgDialect, arith::ArithDialect, tensor::TensorDialect
+Q4c: addLegalDialect (x3)
+Q4d: addIllegalDialect
+Q4e: ConvOpLowering, ReluOpLowering, AddOpLowering
+Q4f: applyPartialConversion
+
+Q5: GaweeToLinalgPass
+
+Q6a: B - Conv accumulates partial sums, must start at zero
+Q6b: B - adaptor gives converted inputs, op gives original attributes
+Q6c: B - No named linalg op for elementwise max(0, x)
+Q6d: B - All ops from illegal dialect must be converted away
 */

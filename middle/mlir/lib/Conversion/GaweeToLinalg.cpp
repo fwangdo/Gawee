@@ -64,17 +64,30 @@ struct ConvOpLowering : public OpConversionPattern<gawee::ConvOp> {
     auto strides = op.getStridesAttr();
     auto dilations = op.getDilationAttr();
 
-    // Step 3: Create output tensor
+    // Step 3: Create output tensor and initialize to zero
+    // Conv is a reduction op - it accumulates into the output, so we must
+    // zero-initialize it for correct results and bufferization
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
-    Value output = rewriter.create<tensor::EmptyOp>(
-        loc,
+    auto elementType = outputType.getElementType();
+
+    Value emptyTensor = tensor::EmptyOp::create(
+        rewriter, loc,
         outputType.getShape(),
-        outputType.getElementType()
+        elementType
     );
 
+    // Create zero constant and fill the output tensor
+    Value zero = arith::ConstantOp::create(
+        rewriter, loc,
+        elementType,
+        rewriter.getZeroAttr(elementType)
+    );
+    Value output = linalg::FillOp::create(rewriter, loc, zero, emptyTensor)
+                       .getResult(0);
+
     // Step 4: Create linalg.conv_2d_nchw_fchw
-    auto conv = rewriter.create<linalg::Conv2DNchwFchwOp>(
-        loc,
+    auto conv = linalg::Conv2DNchwFchwOp::create(
+        rewriter, loc,
         outputType,
         ValueRange{input, weight},  // ins
         output,                      // outs

@@ -18,6 +18,8 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/MLIRContext.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/InitLLVM.h"
@@ -76,6 +78,8 @@ int main(int argc, char **argv) {
   context.loadDialect<gawee::GaweeDialect>();
   context.loadDialect<arith::ArithDialect>();
   context.loadDialect<func::FuncDialect>();
+  context.loadDialect<linalg::LinalgDialect>();
+  context.loadDialect<tensor::TensorDialect>();
 
   // Emit MLIR
   gawee::MLIREmitter emitter(&context);

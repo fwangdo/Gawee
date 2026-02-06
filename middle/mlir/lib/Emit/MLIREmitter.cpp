@@ -6,6 +6,8 @@
 #include "Gawee/GaweeDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinTypes.h"
 
 using namespace mlir;
@@ -27,6 +29,7 @@ OwningOpRef<ModuleOp> MLIREmitter::emit(const llvm::json::Object &graph) {
   // Clear state from previous runs
   valueMap.clear();
   errorMsg.clear();
+  weightArgs.clear();
 
   // Create module
   auto loc = builder->getUnknownLoc();
@@ -42,6 +45,29 @@ OwningOpRef<ModuleOp> MLIREmitter::emit(const llvm::json::Object &graph) {
   if (!inputs || !outputs || !values || !nodes) {
     setError("Missing required fields in graph JSON");
     return nullptr;
+  }
+
+  // First pass: collect all weight tensors from Conv nodes
+  // These will become function arguments
+  for (const auto &nodeVal : *nodes) {
+    const auto *node = nodeVal.getAsObject();
+    if (!node) continue;
+    auto opType = node->getString("op_type");
+    if (opType && *opType == "Conv") {
+      const auto *attrs = node->getObject("attrs");
+      if (attrs) {
+        const auto *weightInfo = attrs->getObject("weight");
+        if (weightInfo) {
+          auto weightType = parseShape(weightInfo->getArray("shape"));
+          if (weightType) {
+            // Generate unique weight name
+            auto nodeName = node->getString("name");
+            std::string weightName = nodeName ? nodeName->str() + "_weight" : "weight";
+            weightArgs.push_back({weightName, weightType});
+          }
+        }
+      }
+    }
   }
 
   // Build function signature
@@ -64,6 +90,11 @@ OwningOpRef<ModuleOp> MLIREmitter::emit(const llvm::json::Object &graph) {
       return nullptr;
     }
     inputTypes.push_back(tensorType);
+  }
+
+  // Add weight types to function signature
+  for (const auto &[name, type] : weightArgs) {
+    inputTypes.push_back(type);
   }
 
   // Output types from "values" metadata
@@ -98,6 +129,15 @@ OwningOpRef<ModuleOp> MLIREmitter::emit(const llvm::json::Object &graph) {
     auto inputName = (*inputs)[i].getAsString();
     valueMap[inputName->str()] = entryBlock->getArgument(i);
   }
+
+  // Map weight arguments to block arguments
+  size_t numInputs = inputs->size();
+  for (size_t i = 0; i < weightArgs.size(); ++i) {
+    valueMap[weightArgs[i].first] = entryBlock->getArgument(numInputs + i);
+  }
+
+  // Reset weight argument index for emitting nodes
+  weightArgIndex = 0;
 
   // Emit each node
   for (const auto &nodeVal : *nodes) {
@@ -199,22 +239,15 @@ bool MLIREmitter::emitConv(const llvm::json::Object &node,
     return false;
   }
 
-  // Get weight info for weight tensor type
-  const auto *weightInfo = attrs->getObject("weight");
-  if (!weightInfo) {
-    setError("Conv: missing weight info");
+  // Get weight from function arguments
+  // Weight was collected in first pass and added as function argument
+  auto nodeName = node.getString("name");
+  std::string weightName = nodeName ? nodeName->str() + "_weight" : "weight";
+  Value weight = lookupValue(weightName);
+  if (!weight) {
+    setError("Conv: weight not found: " + weightName);
     return false;
   }
-  auto weightType = parseShape(weightInfo->getArray("shape"));
-  if (!weightType) {
-    return false;
-  }
-
-  // Create placeholder weight tensor (arith.constant with zeros)
-  // In a real compiler, we'd load from the binary file
-  auto zeroAttr = DenseElementsAttr::get(
-      weightType, builder->getF32FloatAttr(0.0f));
-  Value weight = builder->create<arith::ConstantOp>(loc, zeroAttr);
 
   // Extract conv attributes
   auto getArrayAttr = [&](const char *name) -> SmallVector<int64_t> {
@@ -362,7 +395,7 @@ RankedTensorType MLIREmitter::parseShape(const llvm::json::Array *shape) {
       return nullptr;
     }
   }
-  return RankedTensorType::get(dims, FloatType::getF32(ctx));
+  return RankedTensorType::get(dims, Float32Type::get(ctx));
 }
 
 Value MLIREmitter::lookupValue(llvm::StringRef name) {
