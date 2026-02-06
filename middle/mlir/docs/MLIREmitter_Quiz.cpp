@@ -15,6 +15,9 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "llvm/Support/JSON.h"
+#include <cstddef>
+#include <memory>
+#include <unordered_map>
 
 using namespace mlir;
 using namespace mlir::gawee;
@@ -32,22 +35,26 @@ using namespace mlir::gawee;
 
 class MLIREmitter {
 public:
+  // constructor. should make context. 
   explicit MLIREmitter(MLIRContext *context);
 
+  // owner of operation reference. 
   OwningOpRef<ModuleOp> emit(const llvm::json::Object &graph);
+  // get error.  
   llvm::StringRef getError() const { return errorMsg; }
 
 private:
   MLIRContext *ctx;
+  // codegen. 
   std::unique_ptr<OpBuilder> builder;
   std::string errorMsg;
 
   // Q1a: What type maps value names ("conv1") to MLIR Values?
-  ??? valueMap;
+  std::unordered_map<std::string, Value> valueMap;
 
   // Q1b: What type stores weight arguments as (name, type) pairs?
   // HINT: We need name (string) and type (RankedTensorType) for each weight
-  ??? weightArgs;
+  std::vector<std::pair<std::string, RankedTensorType>> weightArgs;
 
   // Helper methods
   RankedTensorType parseShape(const llvm::json::Array *shape);
@@ -65,7 +72,8 @@ private:
 MLIREmitter::MLIREmitter(MLIRContext *context) : ctx(context) {
   // Q2: Create the OpBuilder
   // HINT: OpBuilder needs a context, use std::make_unique
-  builder = ???;
+  // Q. ctx's type is ptr of MLIRContext. How can it be OpBuilder?
+  builder = std::make_unique<OpBuilder>(ctx);  
 }
 
 //===----------------------------------------------------------------------===//
@@ -81,7 +89,8 @@ RankedTensorType MLIREmitter::parseShape(const llvm::json::Array *shape) {
   SmallVector<int64_t> dims;
   for (const auto &dim : *shape) {
     // Q3a: Extract integer from JSON value
-    if (auto i = dim.???) {
+    if (auto i = dim.getAsInteger()) {
+      // * is not de-reference. it's handler for optional type. 
       dims.push_back(*i);
     } else {
       setError("parseShape: invalid dimension");
@@ -91,7 +100,7 @@ RankedTensorType MLIREmitter::parseShape(const llvm::json::Array *shape) {
 
   // Q3b: Create RankedTensorType with f32 element type
   // HINT: Float32Type::get(ctx) gives f32
-  return RankedTensorType::get(dims, ???);
+  return RankedTensorType::get(dims, Float32Type::get(ctx));
 }
 
 //===----------------------------------------------------------------------===//
@@ -100,11 +109,11 @@ RankedTensorType MLIREmitter::parseShape(const llvm::json::Array *shape) {
 
 Value MLIREmitter::lookupValue(llvm::StringRef name) {
   // Q4: Look up name in valueMap, return nullptr if not found
-  auto it = valueMap.find(???);
+  auto it = valueMap.find(name.str());
   if (it != valueMap.end()) {
-    return ???;
+    return it->second;  
   }
-  return ???;
+  return nullptr;  
 }
 
 //===----------------------------------------------------------------------===//
@@ -142,7 +151,7 @@ OwningOpRef<ModuleOp> MLIREmitter::emit(const llvm::json::Object &graph) {
     if (!node) continue;
 
     // Q5a-i: Get the op_type string from the node
-    auto opType = node->???(???);
+    auto opType = node->getString("op_type");
 
     if (opType && *opType == "Conv") {
       const auto *attrs = node->getObject("attrs");
@@ -152,12 +161,12 @@ OwningOpRef<ModuleOp> MLIREmitter::emit(const llvm::json::Object &graph) {
           auto weightType = parseShape(weightInfo->getArray("shape"));
           if (weightType) {
             // Q5a-ii: Get node name for unique weight naming
-            auto nodeName = node->???("name");
+            auto nodeName = node->getString("name");
             std::string weightName = nodeName ? nodeName->str() + "_weight" : "weight";
 
             // Q5a-iii: Store weight info for later
             // HINT: weightArgs is a vector of pairs
-            weightArgs.push_back({???, ???});
+            weightArgs.push_back({weightName, weightType});
           }
         }
       }
@@ -174,13 +183,14 @@ OwningOpRef<ModuleOp> MLIREmitter::emit(const llvm::json::Object &graph) {
     auto inputName = input.getAsString();
     const auto *valueInfo = values->getObject(*inputName);
     auto tensorType = parseShape(valueInfo->getArray("shape"));
+    // it makes tensor type included in input type. 
     inputTypes.push_back(tensorType);
   }
 
   // Q5b: Add weight types to function signature
   // HINT: Iterate over weightArgs and add each type
   for (const auto &[name, type] : weightArgs) {
-    inputTypes.push_back(???);
+    inputTypes.push_back(type);
   }
 
   // Build output types (similar pattern, already done for you)
@@ -196,13 +206,14 @@ OwningOpRef<ModuleOp> MLIREmitter::emit(const llvm::json::Object &graph) {
   //-----------------------------------------------------------------------
 
   // Q5c-i: Create function type from inputs and outputs
-  auto funcType = builder->???(inputTypes, outputTypes);
+  auto funcType = builder->getFunctionType(inputTypes, outputTypes);
 
   // Q5c-ii: Create FuncOp named "forward"
-  auto func = builder->create<func::FuncOp>(loc, ???, funcType);
+  auto func = builder->create<func::FuncOp>(loc, "forward", funcType);
 
   // Q5c-iii: Add entry block (this creates block arguments)
-  auto *entryBlock = func.???();
+  // func::FuncOp can generate entry block. 
+  auto *entryBlock = func.addEntryBlock();
 
   builder->setInsertionPointToStart(entryBlock);
 
@@ -212,7 +223,7 @@ OwningOpRef<ModuleOp> MLIREmitter::emit(const llvm::json::Object &graph) {
   for (size_t i = 0; i < inputs->size(); ++i) {
     auto inputName = (*inputs)[i].getAsString();
     // Q5d: Map input name to block argument
-    valueMap[inputName->str()] = entryBlock->???(i);
+    valueMap[inputName->str()] = entryBlock->getArgument(i);
   }
 
   //-----------------------------------------------------------------------
@@ -221,7 +232,7 @@ OwningOpRef<ModuleOp> MLIREmitter::emit(const llvm::json::Object &graph) {
   size_t numInputs = inputs->size();
   for (size_t i = 0; i < weightArgs.size(); ++i) {
     // Q5e: Map weight name to block argument (offset by numInputs)
-    valueMap[weightArgs[i].first] = entryBlock->???(??? + i);
+    valueMap[weightArgs[i].first] = entryBlock->getArgument(numInputs + i);
   }
 
   //-----------------------------------------------------------------------
@@ -248,7 +259,7 @@ OwningOpRef<ModuleOp> MLIREmitter::emit(const llvm::json::Object &graph) {
 bool MLIREmitter::emitNode(const llvm::json::Object &node,
                            const llvm::json::Object &values) {
   // Q6a: Get op_type from node
-  auto opType = node.???(???);
+  auto opType = node.getString("op_type"); 
   if (!opType) {
     setError("Node missing op_type");
     return false;
@@ -256,9 +267,11 @@ bool MLIREmitter::emitNode(const llvm::json::Object &node,
 
   // Q6b: Dispatch based on op type
   if (*opType == "Conv") {
-    return ???(node, values);
+    return emitConv(node, values);
   } else if (*opType == "Relu") {
-    return ???(node, values);
+    return emitRelu(node, values);
+  } else if (*opType == "Add") {
+    return emitRelu(node, values); 
   } else {
     // Skip unsupported ops
     return true;
@@ -300,7 +313,7 @@ bool MLIREmitter::emitConv(const llvm::json::Object &node,
   std::string weightName = nodeName ? nodeName->str() + "_weight" : "weight";
 
   // Q7a: Look up the weight value
-  Value weight = ???(weightName);
+  Value weight = lookupValue(weightName);
   if (!weight) {
     setError("Conv: weight not found");
     return false;
