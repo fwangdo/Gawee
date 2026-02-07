@@ -38,7 +38,7 @@ def Gawee_BatchNormOp : Gawee_Op<"batch_norm", []> {
     BoolAttr:$affine, // is it affine or not.  
     AnyTensor:$runningMean, 
     AnyTensor:$runningVar, 
-    F64Attr:$eps, 
+    F64Attr:$eps 
   ); 
   let results = (outs AnyTensor:$output); 
 }
@@ -51,7 +51,7 @@ def Gawee_MaxPoolOp : Gawee_Op<"max_pool", []> {
     DenseI64ArrayAttr:$strides, 
     DenseI64ArrayAttr:$padding, 
     DenseI64ArrayAttr:$dilation, 
-    BoolAttr:$ceilMode, 
+    BoolAttr:$ceilMode 
   );
   let results = (outs AnyTensor:$output); 
 }
@@ -61,7 +61,7 @@ def Gawee_AdAvgPoolOp : Gawee_Op<"ad_avg_pool", []> {
 
   let arguments = (ins
     AnyTensor:$input, 
-    DenseI64ArrayAttr:$outputSize, 
+    DenseI64ArrayAttr:$outputSize
   ); 
   let results = (outs AnyTensor:$output); 
 }
@@ -72,32 +72,20 @@ def Gawee_FlattenOp : Gawee_Op<"flatten", []> {
   let arguments = (ins
     AnyTensor:$input, 
     I64Attr:$startDim, 
-    I64Attr:$endDim, 
-  ); 
-  let results = (outs AnyTensor:$output); 
-}
-
-def Gawee_MatmulOp : Gawee_Op<"matmul", []> {
-  let summary = "matrix multiplication"; 
-
-  let arguments = (ins
-    AnyTensor:$input, 
+    I64Attr:$endDim 
   ); 
   let results = (outs AnyTensor:$output); 
 }
 
 def Gawee_LinearOp : Gawee_Op<"linear", []> {
-  let summary = "linear multiplicaton"; 
+  let summary = "Linear layer";
 
   let arguments = (ins
-    AnyTensor:$input, 
-    DenseI64ArrayAttr:$inFeatures, 
-    DenseI64ArrayAttr:$outFeatures, 
-    AnyTensor:$weight, 
-    AnyTensor:$bias, 
-  )
-
-  let results = (outs AnyTensor:$output); 
+    AnyTensor:$input,
+    AnyTensor:$weight,
+    AnyTensor:$bias
+  );
+  let results = (outs AnyTensor:$output);
 }
 
 #endif
