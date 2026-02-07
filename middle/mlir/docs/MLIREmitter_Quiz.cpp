@@ -54,7 +54,7 @@ private:
 
   // Q1b: What type stores weight arguments as (name, type) pairs?
   // HINT: We need name (string) and type (RankedTensorType) for each weight
-  std::vector<std::pair<std::string, RankedTensorType>> weightArgs;
+  std::vector<std::pair<std::string, RankedTensorType>> weightArgs; // this stands for tensor type according to each operation. 
 
   // Helper methods
   RankedTensorType parseShape(const llvm::json::Array *shape);
@@ -80,6 +80,7 @@ MLIREmitter::MLIREmitter(MLIRContext *context) : ctx(context) {
 // Q3: parseShape - Convert JSON array to RankedTensorType
 //===----------------------------------------------------------------------===//
 
+// nullptr is included in RankedTensorType already. 
 RankedTensorType MLIREmitter::parseShape(const llvm::json::Array *shape) {
   if (!shape) {
     setError("parseShape: null shape array");
@@ -126,6 +127,7 @@ OwningOpRef<ModuleOp> MLIREmitter::emit(const llvm::json::Object &graph) {
   errorMsg.clear();
   weightArgs.clear();
 
+  // Generate an initial block. 
   auto loc = builder->getUnknownLoc();
   auto module = ModuleOp::create(loc);
   builder->setInsertionPointToEnd(module.getBody());
@@ -165,7 +167,7 @@ OwningOpRef<ModuleOp> MLIREmitter::emit(const llvm::json::Object &graph) {
             std::string weightName = nodeName ? nodeName->str() + "_weight" : "weight";
 
             // Q5a-iii: Store weight info for later
-            // HINT: weightArgs is a vector of pairs
+            // std::part<std::string, RankedTensorType>  
             weightArgs.push_back({weightName, weightType});
           }
         }
@@ -189,6 +191,7 @@ OwningOpRef<ModuleOp> MLIREmitter::emit(const llvm::json::Object &graph) {
 
   // Q5b: Add weight types to function signature
   // HINT: Iterate over weightArgs and add each type
+  // Note that, inputs consist of input itself and weights in conv. 
   for (const auto &[name, type] : weightArgs) {
     inputTypes.push_back(type);
   }

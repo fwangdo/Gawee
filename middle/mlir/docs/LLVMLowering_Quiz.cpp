@@ -18,11 +18,12 @@
 
 // Conversion passes
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
-#include "mlir/Conversion/ArithToLLVM/???.h"           // Q1a
-#include "mlir/Conversion/ControlFlowToLLVM/???.h"    // Q1b
-#include "mlir/Conversion/MemRefToLLVM/???.h"         // Q1c
-#include "mlir/Conversion/FuncToLLVM/???.h"           // Q1d
+#include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"           // Q1a
+#include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"    // Q1b
+#include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"         // Q1c
+#include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVMPass.h"           // Q1d
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
+#include "mlir/Pass/PassManager.h"
 
 using namespace mlir;
 
@@ -36,22 +37,22 @@ void registerPipeline() {
       "Lower SCF/MemRef to LLVM dialect",
       [](OpPassManager &pm) {
         // Q2a: First, convert SCF (for loops) to CF (branches)
-        pm.addPass(???());
+        pm.addPass(createSCFToControlFlowPass());
 
         // Q2b: Convert arithmetic operations to LLVM
-        pm.addPass(???());
+        pm.addPass(createArithToLLVMConversionPass());
 
         // Q2c: Convert control flow (branches) to LLVM
-        pm.addPass(???());
+        pm.addPass(createConvertControlFlowToLLVMPass());
 
         // Q2d: Convert memref operations to LLVM
-        pm.addPass(???());
+        pm.addPass(createFinalizeMemRefToLLVMConversionPass());
 
         // Q2e: Convert function definitions to LLVM
-        pm.addPass(???());
+        pm.addPass(createConvertFuncToLLVMPass());
 
         // Q2f: Clean up temporary cast markers
-        pm.addPass(???());
+        pm.addPass(createReconcileUnrealizedCastsPass());
       });
 }
 
@@ -61,10 +62,10 @@ void registerPipeline() {
 
 void registerDialects(DialectRegistry &registry) {
   // Q3a: Register the LLVM dialect (target dialect)
-  registry.insert<???>();
+  registry.insert<LLVM::LLVMDialect>();
 
   // Q3b: Register the ControlFlow dialect (intermediate)
-  registry.insert<???>();
+  registry.insert<cf::ControlFlowDialect>();
 }
 
 //===----------------------------------------------------------------------===//
