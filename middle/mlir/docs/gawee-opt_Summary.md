@@ -114,7 +114,7 @@ endif()
 
 # Show available passes
 ./build/gawee-opt --list-passes
-```
+`
 
 ## Key Takeaways
 

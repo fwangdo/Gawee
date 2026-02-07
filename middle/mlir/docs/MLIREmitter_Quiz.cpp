@@ -338,14 +338,14 @@ bool MLIREmitter::emitConv(const llvm::json::Object &node,
 
   // Q7b: Create the ConvOp
   // HINT: builder->create<ConvOp>(loc, resultType, input, weight, strides, padding, dilation)
-  auto convOp = builder->create<???>(
+  auto convOp = builder->create<ConvOp>(
       loc, resultType, input, weight,
       builder->getDenseI64ArrayAttr(strides),
       builder->getDenseI64ArrayAttr(padding),
       builder->getDenseI64ArrayAttr(dilation));
 
   // Q7c: Store result in valueMap
-  valueMap[???] = convOp.???();
+  valueMap[outputName->str()] = convOp.getResult();
 
   return true;
 }
@@ -359,22 +359,22 @@ bool MLIREmitter::emitRelu(const llvm::json::Object &node,
   auto loc = builder->getUnknownLoc();
 
   // Q8a: Get input
-  const auto *inputs = node.???(???);
-  auto inputName = (*inputs)[0].???();
-  Value input = ???(*inputName);
+  const auto *inputs = node.getArray("inputs");
+  auto inputName = (*inputs)[0].getAsString();
+  Value input = lookupValue(*inputName);
   if (!input) return false;
 
   // Q8b: Get output type
   const auto *outputs = node.getArray("outputs");
   auto outputName = (*outputs)[0].getAsString();
-  const auto *outputInfo = values.???(???);
+  const auto *outputInfo = values.getObject(*outputName);
   auto resultType = parseShape(outputInfo->getArray("shape"));
 
   // Q8c: Create ReluOp
-  auto reluOp = builder->create<???>(loc, resultType, input);
+  auto reluOp = builder->create<ReluOp>(loc, resultType, input);
 
   // Q8d: Store result
-  valueMap[???] = reluOp.???();
+  valueMap[outputName->str()] = reluOp.getResult();
 
   return true;
 }
