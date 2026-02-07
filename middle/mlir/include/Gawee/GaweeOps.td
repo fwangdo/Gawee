@@ -29,8 +29,8 @@ def Gawee_AddOp : Gawee_Op<"add", []> {
   let results = (outs AnyTensor:$output);
 }
 
-def Gawee_BatchNormOp : Gawee_Op<"batch", []> {
-  let summary = "Batch normalzation"; 
+def Gawee_BatchNormOp : Gawee_Op<"batch_norm", []> {
+  let summary = "Batch normalization"; 
   let arguments = (ins
     AnyTensor:$input, 
     AnyTensor:$weight, // scale
@@ -43,7 +43,7 @@ def Gawee_BatchNormOp : Gawee_Op<"batch", []> {
   let results = (outs AnyTensor:$output); 
 }
 
-def Gawee_MaxPoolOp : Gawee_Op<"maxpool", []> {
+def Gawee_MaxPoolOp : Gawee_Op<"max_pool", []> {
   let summary = "Max pooling"; 
   let arguments = (ins
     AnyTensor:$input, 
@@ -53,6 +53,50 @@ def Gawee_MaxPoolOp : Gawee_Op<"maxpool", []> {
     DenseI64ArrayAttr:$dilation, 
     BoolAttr:$ceilMode, 
   );
+  let results = (outs AnyTensor:$output); 
+}
+
+def Gawee_AdAvgPoolOp : Gawee_Op<"ad_avg_pool", []> {
+  let summary = "adaptive average pooling"; 
+
+  let arguments = (ins
+    AnyTensor:$input, 
+    DenseI64ArrayAttr:$outputSize, 
+  ); 
+  let results = (outs AnyTensor:$output); 
+}
+
+def Gawee_FlattenOp : Gawee_Op<"flatten", []> {
+  let summary = "flatten operation"; 
+
+  let arguments = (ins
+    AnyTensor:$input, 
+    I64Attr:$startDim, 
+    I64Attr:$endDim, 
+  ); 
+  let results = (outs AnyTensor:$output); 
+}
+
+def Gawee_MatmulOp : Gawee_Op<"matmul", []> {
+  let summary = "matrix multiplication"; 
+
+  let arguments = (ins
+    AnyTensor:$input, 
+  ); 
+  let results = (outs AnyTensor:$output); 
+}
+
+def Gawee_LinearOp : Gawee_Op<"linear", []> {
+  let summary = "linear multiplicaton"; 
+
+  let arguments = (ins
+    AnyTensor:$input, 
+    DenseI64ArrayAttr:$inFeatures, 
+    DenseI64ArrayAttr:$outFeatures, 
+    AnyTensor:$weight, 
+    AnyTensor:$bias, 
+  )
+
   let results = (outs AnyTensor:$output); 
 }
 

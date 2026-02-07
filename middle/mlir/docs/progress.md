@@ -189,12 +189,27 @@ Gawee → Linalg(tensor) → Bufferize → Linalg(memref) → SCF loops
 
 ## Phase 8: Extend for ResNet (User's Own Work)
 
+**graph.json analysis (ResNet-18, 48 nodes):**
+
+| Op in graph.json | Count | In GaweeOps.td? |
+|-----------------|-------|-----------------|
+| `Conv` | 20 | ✅ Yes |
+| `Relu` | 16 | ✅ Yes |
+| `Add` | 8 | ✅ Yes |
+| `MaxPool` | 1 | ✅ Yes |
+| `AdAvgPool` (AdaptiveAvgPool2d) | 1 | ⬚ Todo |
+| `flatten` | 1 | ⬚ Todo |
+| `MatMul` (Linear) | 1 | ⬚ Todo |
+
+**Note:** BatchNorm does not appear in graph.json because conv-bn fusion
+was already applied at the frontend. Conv nodes carry fused weight+bias.
+
 | Task | Status | Files |
 |------|--------|-------|
-| Add MaxPool op to dialect | ⬚ Todo | GaweeOps.td |
-| Add BatchNorm op to dialect | ⬚ Todo | GaweeOps.td |
-| Add bias support to conv | ⬚ Todo | GaweeOps.td |
-| Add padding support to conv | ⬚ Todo | GaweeOps.td |
+| Add MaxPool op to dialect | ✅ Done | GaweeOps.td |
+| Add AdaptiveAvgPool op to dialect | ⬚ Todo | GaweeOps.td |
+| Add Flatten op to dialect | ⬚ Todo | GaweeOps.td |
+| Add Linear (MatMul) op to dialect | ⬚ Todo | GaweeOps.td |
 | Implement lowerings for new ops | ⬚ Todo | GaweeToLinalg.cpp |
 | Extend MLIREmitter for new ops | ⬚ Todo | MLIREmitter.cpp |
 | Full ResNet inference | ⬚ Todo | - |
