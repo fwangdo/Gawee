@@ -9,6 +9,7 @@ def Gawee_ConvOp : Gawee_Op<"conv", []> {
   let arguments = (ins 
     AnyTensor:$input, 
     AnyTensor:$weight,
+    AnyTensor:$bias, 
     DenseI64ArrayAttr:$strides,
     DenseI64ArrayAttr:$padding,
     DenseI64ArrayAttr:$dilation
@@ -26,6 +27,33 @@ def Gawee_AddOp : Gawee_Op<"add", []> {
   let summary = "Elementwise add";
   let arguments = (ins AnyTensor:$lhs, AnyTensor:$rhs);
   let results = (outs AnyTensor:$output);
+}
+
+def Gawee_BatchNormOp : Gawee_Op<"batch", []> {
+  let summary = "Batch normalzation"; 
+  let arguments = (ins
+    AnyTensor:$input, 
+    AnyTensor:$weight, // scale
+    AnyTensor:$bias, // bias 
+    BoolAttr:$affine, // is it affine or not.  
+    AnyTensor:$runningMean, 
+    AnyTensor:$runningVar, 
+    F64Attr:$eps, 
+  ); 
+  let results = (outs AnyTensor:$output); 
+}
+
+def Gawee_MaxPoolOp : Gawee_Op<"maxpool", []> {
+  let summary = "Max pooling"; 
+  let arguments = (ins
+    AnyTensor:$input, 
+    DenseI64ArrayAttr:$kernelSize, 
+    DenseI64ArrayAttr:$strides, 
+    DenseI64ArrayAttr:$padding, 
+    DenseI64ArrayAttr:$dilation, 
+    BoolAttr:$ceilMode, 
+  );
+  let results = (outs AnyTensor:$output); 
 }
 
 #endif
