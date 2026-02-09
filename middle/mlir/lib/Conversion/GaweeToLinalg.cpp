@@ -24,8 +24,10 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
 #include "mlir/Dialect/Utils/StructuredOpsUtils.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/ValueRange.h"
 #include "mlir/Pass/Pass.h"
@@ -134,6 +136,7 @@ struct ReluOpLowering : public OpConversionPattern<gawee::ReluOp> {
     );
 
     // Step 3: Create indexing maps (identity maps for elementwise op)
+    // note that, small vector is not a tensor but a container to convery information to MLIR framework. 
     SmallVector<AffineMap, 2> indexingMaps(
         2, AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext())
     );
@@ -383,36 +386,61 @@ struct AdAvgOpLowering : public OpConversionPattern<gawee::AdAvgPoolOp> {
 // Flatten operation lowering.  
 //===----------------------------------------------------------------------===//
 
-struct FlattenOpLowering : public OpConversionPattern<gawee::AddOp> {
+struct FlattenOpLowering : public OpConversionPattern<gawee::FlattenOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(gawee::AddOp op, OpAdaptor adaptor,
+  matchAndRewrite(gawee::FlattenOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
     // Step 1: Get operands
-    Value lhs = adaptor.getLhs();
-    Value rhs = adaptor.getRhs();
+    Value input = adaptor.getInput(); 
+    auto inputType = mlir::cast<RankedTensorType>(input.getType()); 
+    auto startDim = adaptor.getStartDimAttr(); 
+    auto endDim = adaptor.getEndDimAttr(); 
 
     // Step 2: Get output type and create empty output tensor
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
-    Value output = tensor::EmptyOp::create(
-        rewriter, loc,
-        outputType.getShape(),
-        outputType.getElementType()
-    );
 
-    // Step 3: Create linalg.add
-    auto addOp = linalg::AddOp::create(
-        rewriter, loc,
-        TypeRange{outputType},
-        ValueRange{lhs, rhs},  // ins
-        ValueRange{output}      // outs
+    // Calculate start / end dimension.
+    int64_t endDimInt = endDim.getInt(); 
+    int64_t rank = inputType.getRank();  
+    
+    if (endDimInt < 0) {
+      endDimInt += rank; 
+    }
+    
+    SmallVector<ReassociationIndices> reassociation;
+
+    // non-merge
+    for (int64_t i = 0; i < startDim.getInt(); i++) {
+      reassociation.push_back({i}); 
+    }
+
+    // merge
+    ReassociationIndices mergedGroup; 
+    for (int64_t i = startDim.getInt(); i <= endDimInt; i++) {
+      mergedGroup.push_back(i); 
+    }
+    reassociation.push_back(mergedGroup);
+
+    // non-merge. 
+    for (auto i = endDimInt; i < rank; i++) {
+      reassociation.push_back({i}); 
+    }
+
+
+    // Step 3: Create flatten operation.
+    auto flattenOp = rewriter.create<tensor::CollapseShapeOp>(
+        loc,
+        outputType, 
+        input, 
+        reassociation
     );
 
     // Step 4: Replace original op
-    rewriter.replaceOp(op, addOp.getResults());
+    rewriter.replaceOp(op, flattenOp.getResult());
 
     return success();
   }
