@@ -67,6 +67,7 @@ struct ConvOpLowering : public OpConversionPattern<gawee::ConvOp> {
     // Step 1: Get operands from adaptor (already converted values)
     Value input = adaptor.getInput();
     Value weight = adaptor.getWeight();
+    Value bias = adaptor.getBias(); // TODO  
 
     // Step 2: Get attributes (use *Attr() to get Attribute, not ArrayRef)
     auto strides = op.getStridesAttr();
@@ -103,8 +104,47 @@ struct ConvOpLowering : public OpConversionPattern<gawee::ConvOp> {
         dilations
     );
 
-    // Step 5: Replace original op with conv result
-    rewriter.replaceOp(op, conv.getResults());
+    // Step 5: Add bias
+    // bias shape: [out_channels] (1D), conv output: [N, C, H, W] (4D)
+    // Need to broadcast bias across N, H, W dims using linalg.generic
+    Value convResult = conv.getResults()[0];
+    int64_t rank = outputType.getRank();
+
+    Value biasEmpty = tensor::EmptyOp::create(
+        rewriter, loc,
+        outputType.getShape(),
+        elementType
+    );
+
+    // Indexing maps:
+    //   bias: (n, c, h, w) -> (c)       — broadcast across n, h, w
+    //   conv: (n, c, h, w) -> (n, c, h, w)  — identity
+    //   out:  (n, c, h, w) -> (n, c, h, w)  — identity
+    auto ctx = rewriter.getContext();
+    AffineMap biasMap = AffineMap::get(
+        rank, 0, {getAffineDimExpr(1, ctx)}, ctx);  // (n,c,h,w) -> (c)
+    AffineMap identityMap = AffineMap::getMultiDimIdentityMap(rank, ctx);
+
+    SmallVector<AffineMap> indexingMaps = {identityMap, biasMap, identityMap};
+    SmallVector<utils::IteratorType> iteratorTypes(
+        rank, utils::IteratorType::parallel);
+
+    auto biasAdd = linalg::GenericOp::create(
+        rewriter, loc,
+        TypeRange{outputType},
+        ValueRange{convResult, bias},   // inputs
+        ValueRange{biasEmpty},          // output (destination)
+        indexingMaps,
+        iteratorTypes,
+        [&](OpBuilder &builder, Location loc, ValueRange args) {
+          // args[0] = conv element, args[1] = bias element, args[2] = output (unused)
+          Value result = arith::AddFOp::create(builder, loc, args[0], args[1]);
+          linalg::YieldOp::create(builder, loc, result);
+        }
+    );
+
+    // Step 6: Replace original op with conv + bias result
+    rewriter.replaceOp(op, biasAdd.getResults());
 
     return success();
   }
