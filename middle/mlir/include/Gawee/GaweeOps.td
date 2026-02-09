@@ -43,6 +43,7 @@ def Gawee_BatchNormOp : Gawee_Op<"batch_norm", []> {
   let results = (outs AnyTensor:$output); 
 }
 
+// added for resnet. 
 def Gawee_MaxPoolOp : Gawee_Op<"max_pool", []> {
   let summary = "Max pooling"; 
   let arguments = (ins

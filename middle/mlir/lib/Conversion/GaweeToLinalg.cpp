@@ -24,9 +24,15 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Utils/StructuredOpsUtils.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/ValueRange.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "llvm/ADT/SmallVector.h"
+#include <cstdint>
+#include <limits>
 
 using namespace mlir;
 
@@ -121,8 +127,8 @@ struct ReluOpLowering : public OpConversionPattern<gawee::ReluOp> {
     int64_t rank = inputType.getRank();
 
     // Step 2: Create output tensor (same shape as input)
-    Value output = rewriter.create<tensor::EmptyOp>(
-        loc,
+    Value output = tensor::EmptyOp::create(
+        rewriter, loc,
         inputType.getShape(),
         elementType
     );
@@ -138,8 +144,8 @@ struct ReluOpLowering : public OpConversionPattern<gawee::ReluOp> {
     );
 
     // Step 5: Create linalg.generic op
-    auto genericOp = rewriter.create<linalg::GenericOp>(
-        loc,
+    auto genericOp = linalg::GenericOp::create(
+        rewriter, loc,
         /*resultTypes=*/TypeRange{inputType},
         /*inputs=*/ValueRange{input},
         /*outputs=*/ValueRange{output},
@@ -150,17 +156,17 @@ struct ReluOpLowering : public OpConversionPattern<gawee::ReluOp> {
           Value inVal = args[0];
 
           // Create zero constant
-          Value zero = builder.create<arith::ConstantOp>(
-              loc,
+          Value zero = arith::ConstantOp::create(
+              builder, loc,
               elementType,
               builder.getZeroAttr(elementType)
           );
 
           // max(0, x)
-          Value result = builder.create<arith::MaximumFOp>(loc, inVal, zero);
+          Value result = arith::MaximumFOp::create(builder, loc, inVal, zero);
 
           // Yield result
-          builder.create<linalg::YieldOp>(loc, result);
+          linalg::YieldOp::create(builder, loc, result);
         }
     );
 
@@ -189,15 +195,15 @@ struct AddOpLowering : public OpConversionPattern<gawee::AddOp> {
 
     // Step 2: Get output type and create empty output tensor
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
-    Value output = rewriter.create<tensor::EmptyOp>(
-        loc,
+    Value output = tensor::EmptyOp::create(
+        rewriter, loc,
         outputType.getShape(),
         outputType.getElementType()
     );
 
     // Step 3: Create linalg.add
-    auto addOp = rewriter.create<linalg::AddOp>(
-        loc,
+    auto addOp = linalg::AddOp::create(
+        rewriter, loc,
         TypeRange{outputType},
         ValueRange{lhs, rhs},  // ins
         ValueRange{output}      // outs
@@ -210,13 +216,247 @@ struct AddOpLowering : public OpConversionPattern<gawee::AddOp> {
   }
 };
 
+
 //===----------------------------------------------------------------------===//
 // TODO: Add more lowering patterns
 //===----------------------------------------------------------------------===//
-//
-// - MaxPoolOpLowering -> linalg.pooling_nchw_max
-// - LinearOpLowering -> linalg.matmul + linalg.broadcast(bias)
-//
+
+//===----------------------------------------------------------------------===//
+// Maxpool lowering.  
+//===----------------------------------------------------------------------===//
+
+struct MaxPoolOpLowering : public OpConversionPattern<gawee::MaxPoolOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(gawee::MaxPoolOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    // Step 1: Get all features.  
+    Value input = adaptor.getInput();
+    auto kernelSize = adaptor.getKernelSizeAttr(); 
+    auto strides = adaptor.getStridesAttr(); 
+    auto padding = adaptor.getPaddingAttr(); 
+    auto dilation = adaptor.getDilationAttr();  
+    auto ceilMode = adaptor.getCeilMode();
+
+    // Step 2: Get output type and create empty output tensor
+    auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
+    auto elementType = outputType.getElementType();  
+    
+    // scaffold. It's destination which calculated result will be saved.  
+    Value emptyTensor = tensor::EmptyOp::create(
+        rewriter,loc,
+        outputType.getShape(),
+        elementType
+    );
+
+    // how to genreate neg inf?
+    auto negInf = arith::ConstantOp::create(rewriter, loc,
+      rewriter.getFloatAttr(elementType, -std::numeric_limits<double>::infinity())
+    );
+    auto filledOutput = linalg::FillOp::create(rewriter, loc, negInf.getResult(), emptyTensor);
+
+    // window tensor to let mlir know the shape kernel.
+    Value windowTensor = tensor::EmptyOp::create(rewriter, loc, kernelSize, elementType
+    );
+
+
+    // Step 3: Create linalg.pooling_nchw_max
+    auto maxPoolOp = linalg::PoolingNchwMaxOp::create(
+        rewriter, loc, outputType,
+        // ValueRange is a container which has Values.
+        ValueRange{input, windowTensor}, filledOutput.getResult(0),
+        strides,
+        dilation
+    );
+
+    // Step 4: Replace original op
+    rewriter.replaceOp(op, maxPoolOp.getResults());
+
+    return success();
+  }
+};
+
+
+//===----------------------------------------------------------------------===//
+// Adaptive average pooling lowering.  
+//===----------------------------------------------------------------------===//
+
+struct AdAvgOpLowering : public OpConversionPattern<gawee::AdAvgPoolOp> {
+  // Note that, Adaptive average pooling is pytorch specific operator. 
+  // Therefore, mlir does not have this operation. 
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(gawee::AdAvgPoolOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    // Step 1: Extract information.  
+    auto input = adaptor.getInput(); 
+    auto inputType = mlir::cast<RankedTensorType>(input.getType()); 
+    auto elementType = inputType.getElementType();
+
+    // shape of input
+    int64_t H = inputType.getShape()[2]; 
+    int64_t W = inputType.getShape()[3]; 
+
+    // Step 2: Get output type and create empty output tensor
+    auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
+
+    // Step 3: Generate destination object.
+    Value emptyTensor = tensor::EmptyOp::create(
+        rewriter, loc, outputType.getShape(), elementType 
+    ); 
+    Value zero = arith::ConstantOp::create(
+        rewriter, loc, elementType, rewriter.getZeroAttr(elementType)
+    );
+    Value zeroFilled = linalg::FillOp::create(
+        rewriter, loc, zero, emptyTensor 
+    ).getResult(0); 
+    
+    // Step 4: Create window tensor.
+    Value windowTensor = tensor::EmptyOp::create(
+        rewriter, loc, ArrayRef<int64_t>{H, W}, elementType
+    );
+
+    // 5. Extract attributes for operation. 
+    auto strideAttr = rewriter.getDenseI64ArrayAttr({1, 1});
+    auto dilationAttr = rewriter.getDenseI64ArrayAttr({1,1});
+
+    // 6. Generate Sumpool, which is the preliminary step for generating adaptive average.
+    auto sumPool = linalg::PoolingNchwSumOp::create(
+        rewriter, loc, outputType, ValueRange{input, windowTensor},
+        ValueRange{zeroFilled}, strideAttr,
+        dilationAttr
+    );
+
+    // 7. Createt the divisor constant which the number of total elements for one element(k_H * k_W).  
+    int64_t count = H * W;
+    Value countVal = arith::ConstantOp::create(
+        rewriter, loc, elementType,
+        rewriter.getFloatAttr(elementType, static_cast<double>(count)) 
+    );
+
+    // div empty
+    Value divEmpty = tensor::EmptyOp::create(
+        rewriter, loc, outputType.getShape(), elementType 
+    );
+
+    // key factor: elementwise division. 
+    int64_t rank = outputType.getRank();
+    // template argument 2 means "assigning 2 slots(slot is decided by sizeof function) by default."
+    SmallVector<AffineMap, 2> indexingMaps(
+        2, AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext())
+    );
+    // it means that we can do parallel method for all dimensions. 
+    SmallVector<utils::IteratorType> iteratorTypes(
+        rank, utils::IteratorType::parallel
+    ); 
+
+    //
+    auto divOp = linalg::GenericOp::create(
+        rewriter, loc, TypeRange{outputType},
+        ValueRange{sumPool->getResults()[0]}, // ins
+        ValueRange{divEmpty},                 // outs
+        indexingMaps, iteratorTypes,
+        [&](OpBuilder &builder, Location loc, ValueRange args) {
+          // this part operates one loop. 
+          // args[0] is input, args[1] is output.
+          // Yield records the result on proper output location. 
+          Value avg = arith::DivFOp::create(builder, loc, args[0], countVal); 
+          linalg::YieldOp::create(builder, loc, avg); 
+      }
+    );
+
+    // Step 4: Replace original op
+    rewriter.replaceOp(op, divOp.getResults());
+
+    return success();
+  }
+};
+
+
+//===----------------------------------------------------------------------===//
+// Flatten operation lowering.  
+//===----------------------------------------------------------------------===//
+
+struct FlattenOpLowering : public OpConversionPattern<gawee::AddOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(gawee::AddOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    // Step 1: Get operands
+    Value lhs = adaptor.getLhs();
+    Value rhs = adaptor.getRhs();
+
+    // Step 2: Get output type and create empty output tensor
+    auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
+    Value output = tensor::EmptyOp::create(
+        rewriter, loc,
+        outputType.getShape(),
+        outputType.getElementType()
+    );
+
+    // Step 3: Create linalg.add
+    auto addOp = linalg::AddOp::create(
+        rewriter, loc,
+        TypeRange{outputType},
+        ValueRange{lhs, rhs},  // ins
+        ValueRange{output}      // outs
+    );
+
+    // Step 4: Replace original op
+    rewriter.replaceOp(op, addOp.getResults());
+
+    return success();
+  }
+};
+
+
+//===----------------------------------------------------------------------===//
+// Linear lowering.  
+//===----------------------------------------------------------------------===//
+
+struct LinearOpLowering : public OpConversionPattern<gawee::AddOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(gawee::AddOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    // Step 1: Get operands
+    Value lhs = adaptor.getLhs();
+    Value rhs = adaptor.getRhs();
+
+    // Step 2: Get output type and create empty output tensor
+    auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
+    Value output = tensor::EmptyOp::create(
+        rewriter, loc,
+        outputType.getShape(),
+        outputType.getElementType()
+    );
+
+    // Step 3: Create linalg.add
+    auto addOp = linalg::AddOp::create(
+        rewriter, loc,
+        TypeRange{outputType},
+        ValueRange{lhs, rhs},  // ins
+        ValueRange{output}      // outs
+    );
+
+    // Step 4: Replace original op
+    rewriter.replaceOp(op, addOp.getResults());
+
+    return success();
+  }
+};
 
 //===----------------------------------------------------------------------===//
 // Pass Definition
