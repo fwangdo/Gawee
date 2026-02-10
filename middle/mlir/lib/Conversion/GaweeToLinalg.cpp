@@ -302,7 +302,8 @@ struct MaxPoolOpLowering : public OpConversionPattern<gawee::MaxPoolOp> {
     auto filledOutput = linalg::FillOp::create(rewriter, loc, negInf.getResult(), emptyTensor);
 
     // window tensor to let mlir know the shape kernel.
-    Value windowTensor = tensor::EmptyOp::create(rewriter, loc, kernelSize, elementType
+    // Use non-Attr version (ArrayRef<int64_t>) for EmptyOp, not DenseI64ArrayAttr.
+    Value windowTensor = tensor::EmptyOp::create(rewriter, loc, adaptor.getKernelSize(), elementType
     );
 
 
@@ -465,9 +466,9 @@ struct FlattenOpLowering : public OpConversionPattern<gawee::FlattenOp> {
     }
     reassociation.push_back(mergedGroup);
 
-    // non-merge. 
-    for (auto i = endDimInt; i < rank; i++) {
-      reassociation.push_back({i}); 
+    // non-merge.
+    for (auto i = endDimInt + 1; i < rank; i++) {
+      reassociation.push_back({i});
     }
 
     // Step 3: Create flatten operation.
@@ -620,7 +621,10 @@ struct GaweeToLinalgPass
     patterns.add<ConvOpLowering>(ctx);
     patterns.add<ReluOpLowering>(ctx);
     patterns.add<AddOpLowering>(ctx);
-    // TODO: Add more patterns
+    patterns.add<MaxPoolOpLowering>(ctx); 
+    patterns.add<AdAvgOpLowering>(ctx); 
+    patterns.add<FlattenOpLowering>(ctx);
+    patterns.add<LinearOpLowering>(ctx); 
 
     // Run conversion
     if (failed(applyPartialConversion(module, target, std::move(patterns)))) {

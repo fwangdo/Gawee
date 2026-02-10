@@ -191,15 +191,15 @@ Gawee → Linalg(tensor) → Bufferize → Linalg(memref) → SCF loops
 
 **graph.json analysis (ResNet-18, 48 nodes):**
 
-| Op in graph.json | Count | In GaweeOps.td? |
-|-----------------|-------|-----------------|
-| `Conv` | 20 | ✅ Yes |
-| `Relu` | 16 | ✅ Yes |
-| `Add` | 8 | ✅ Yes |
-| `MaxPool` | 1 | ✅ Yes |
-| `AdAvgPool` (AdaptiveAvgPool2d) | 1 | ⬚ Todo |
-| `flatten` | 1 | ⬚ Todo |
-| `MatMul` (Linear) | 1 | ⬚ Todo |
+| Op in graph.json | Count | In GaweeOps.td? | Lowering? |
+|-----------------|-------|-----------------|-----------|
+| `Conv` | 20 | ✅ Yes | ✅ Done (+ bias broadcast) |
+| `Relu` | 16 | ✅ Yes | ✅ Done |
+| `Add` | 8 | ✅ Yes | ✅ Done |
+| `MaxPool` | 1 | ✅ Yes | ✅ Done |
+| `AdAvgPool` (AdaptiveAvgPool2d) | 1 | ✅ Yes | ✅ Done (sum pool + divf) |
+| `flatten` | 1 | ✅ Yes | ✅ Done (collapse_shape) |
+| `MatMul` (Linear) | 1 | ✅ Yes | ✅ Done (matmul_transpose_b + bias) |
 
 **Note:** BatchNorm does not appear in graph.json because conv-bn fusion
 was already applied at the frontend. Conv nodes carry fused weight+bias.
@@ -207,10 +207,15 @@ was already applied at the frontend. Conv nodes carry fused weight+bias.
 | Task | Status | Files |
 |------|--------|-------|
 | Add MaxPool op to dialect | ✅ Done | GaweeOps.td |
-| Add AdaptiveAvgPool op to dialect | ⬚ Todo | GaweeOps.td |
-| Add Flatten op to dialect | ⬚ Todo | GaweeOps.td |
-| Add Linear (MatMul) op to dialect | ⬚ Todo | GaweeOps.td |
-| Implement lowerings for new ops | ⬚ Todo | GaweeToLinalg.cpp |
+| Add AdaptiveAvgPool op to dialect | ✅ Done | GaweeOps.td |
+| Add Flatten op to dialect | ✅ Done | GaweeOps.td |
+| Add Linear op to dialect | ✅ Done | GaweeOps.td |
+| Add bias to Conv lowering | ✅ Done | GaweeToLinalg.cpp |
+| Implement MaxPool lowering | ✅ Done | GaweeToLinalg.cpp |
+| Implement AdAvgPool lowering | ✅ Done | GaweeToLinalg.cpp |
+| Implement Flatten lowering | ✅ Done | GaweeToLinalg.cpp |
+| Implement Linear lowering | ✅ Done | GaweeToLinalg.cpp |
+| Register all new patterns in pass | ✅ Done | GaweeToLinalg.cpp |
 | Extend MLIREmitter for new ops | ⬚ Todo | MLIREmitter.cpp |
 | Full ResNet inference | ⬚ Todo | - |
 
