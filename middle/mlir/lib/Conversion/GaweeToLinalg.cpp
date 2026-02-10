@@ -26,6 +26,8 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
 #include "mlir/Dialect/Utils/StructuredOpsUtils.h"
+#include "mlir/IR/AffineExpr.h"
+#include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -530,14 +532,41 @@ struct LinearOpLowering : public OpConversionPattern<gawee::LinearOp> {
     Value matmulResult = matmul.getResult(0);  
     int64_t rank = outputType.getRank();
 
-    Value output = arith::ConstantOp::create(
-        rewriter, loc, elementType, rewriter.getZeroAttr(elementType)    
+    Value biasEmpty =
+        tensor::EmptyOp::create(rewriter, loc, outputType.getShape(),
+                                elementType
     );
 
-    auto linearOp = linalg::AddOp::create(rewriter, loc, outputType,
-                                          ValueRange{matmulResult, bias},
-                                          output                           
+    auto ctx = rewriter.getContext();
+    // AffineMap defines object that has all information to calculate loop.  
+    AffineMap biasMap = AffineMap::get(
+      // getAffineDimExpr makes affine opearation for each loop. 
+      // it means biasMap use only c(index 1) dimension like bias[c]
+      rank, 0, getAffineDimExpr(1, ctx) , ctx
     ); 
+    AffineMap identityMap = AffineMap::getMultiDimIdentityMap(rank, ctx);
+
+    SmallVector<AffineMap> indexingMaps = {
+      identityMap, // lhs. the value left to the operation. 
+      biasMap, // rhs. the value right to the operation.
+      identityMap // the destination. 
+          }; 
+    SmallVector<utils::IteratorType> iteratorTypes(
+        rank, utils::IteratorType::parallel);
+
+    auto linearOp = linalg::GenericOp::create(
+        rewriter, loc,
+        TypeRange{outputType},
+        ValueRange{matmulResult, bias},   // inputs
+        ValueRange{biasEmpty},          // output (destination)
+        indexingMaps,
+        iteratorTypes,
+        [&](OpBuilder &builder, Location loc, ValueRange args) {
+          // args[0] = conv element, args[1] = bias element, args[2] = output (unused)
+          Value result = arith::AddFOp::create(builder, loc, args[0], args[1]);
+          linalg::YieldOp::create(builder, loc, result);
+        }
+    );
 
     // Step 4: Replace original op
     rewriter.replaceOp(op, linearOp.getResults());
