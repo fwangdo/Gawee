@@ -29,6 +29,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Value.h"
 #include "mlir/IR/ValueRange.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -260,10 +261,7 @@ struct AddOpLowering : public OpConversionPattern<gawee::AddOp> {
 };
 
 
-//===----------------------------------------------------------------------===//
-// TODO: Add more lowering patterns
-//===----------------------------------------------------------------------===//
-
+// As of this part, I define pass on my own. 
 //===----------------------------------------------------------------------===//
 // Maxpool lowering.  
 //===----------------------------------------------------------------------===//
@@ -470,7 +468,6 @@ struct FlattenOpLowering : public OpConversionPattern<gawee::FlattenOp> {
       reassociation.push_back({i}); 
     }
 
-
     // Step 3: Create flatten operation.
     auto flattenOp = rewriter.create<tensor::CollapseShapeOp>(
         loc,
@@ -491,36 +488,59 @@ struct FlattenOpLowering : public OpConversionPattern<gawee::FlattenOp> {
 // Linear lowering.  
 //===----------------------------------------------------------------------===//
 
-struct LinearOpLowering : public OpConversionPattern<gawee::AddOp> {
+struct LinearOpLowering : public OpConversionPattern<gawee::LinearOp> {
+  // we need two operations which are matmul and add. 
+  // because linear consists of matmul and add. 
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(gawee::AddOp op, OpAdaptor adaptor,
+  matchAndRewrite(gawee::LinearOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
     // Step 1: Get operands
-    Value lhs = adaptor.getLhs();
-    Value rhs = adaptor.getRhs();
+    Value input = adaptor.getInput(); 
+    Value weight = adaptor.getWeight();
+    Value bias = adaptor.getBias(); 
 
+    // Frist, we have to define matmul operation. 
     // Step 2: Get output type and create empty output tensor
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
-    Value output = tensor::EmptyOp::create(
-        rewriter, loc,
-        outputType.getShape(),
-        outputType.getElementType()
+    auto elementType = outputType.getElementType();
+
+    Value emptyTensor = tensor::EmptyOp::create(
+        rewriter, loc, outputType.getShape(), elementType 
     );
 
-    // Step 3: Create linalg.add
-    auto addOp = linalg::AddOp::create(
-        rewriter, loc,
-        TypeRange{outputType},
-        ValueRange{lhs, rhs},  // ins
-        ValueRange{output}      // outs
+    // it should generate ssa value by getResult. But constantOp is an exception
+    Value zero = arith::ConstantOp::create(
+        rewriter, loc, elementType, rewriter.getZeroAttr(elementType)    
     );
+    // getResult means getting nth ssa value from the defined operation. 
+    Value filledZero = linalg::FillOp::create(
+        rewriter, loc, zero, emptyTensor
+    ).getResult(0);
+
+    auto matmul = linalg::MatmulTransposeBOp::create(
+        rewriter, loc, outputType, ValueRange{input, weight},
+        filledZero
+    );  
+
+    // second. 
+    Value matmulResult = matmul.getResult(0);  
+    int64_t rank = outputType.getRank();
+
+    Value output = arith::ConstantOp::create(
+        rewriter, loc, elementType, rewriter.getZeroAttr(elementType)    
+    );
+
+    auto linearOp = linalg::AddOp::create(rewriter, loc, outputType,
+                                          ValueRange{matmulResult, bias},
+                                          output                           
+    ); 
 
     // Step 4: Replace original op
-    rewriter.replaceOp(op, addOp.getResults());
+    rewriter.replaceOp(op, linearOp.getResults());
 
     return success();
   }
