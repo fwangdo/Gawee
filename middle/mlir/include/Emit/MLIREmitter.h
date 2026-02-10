@@ -68,6 +68,12 @@ private:
   bool emitRelu(const llvm::json::Object &node, const llvm::json::Object &values);
   bool emitAdd(const llvm::json::Object &node, const llvm::json::Object &values);
 
+  // Add. 
+  bool emitMaxPool(const llvm::json::Object &node, const llvm::json::Object &values);
+  bool emitAdAvgPool(const llvm::json::Object &node, const llvm::json::Object &values);
+  bool emitFlatten(const llvm::json::Object &node, const llvm::json::Object &values);
+  bool emitLinear(const llvm::json::Object &node, const llvm::json::Object &values);
+
   /// Helper: Look up input Value by name
   Value lookupValue(llvm::StringRef name);
 
