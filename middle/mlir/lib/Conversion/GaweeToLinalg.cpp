@@ -75,29 +75,64 @@ struct ConvOpLowering : public OpConversionPattern<gawee::ConvOp> {
     // Step 2: Get attributes (use *Attr() to get Attribute, not ArrayRef)
     auto strides = op.getStridesAttr();
     auto dilations = op.getDilationAttr();
+    auto padding = op.getPadding(); // ArrayRef<int64_t>
 
-    // Step 3: Create output tensor and initialize to zero
-    // Conv is a reduction op - it accumulates into the output, so we must
-    // zero-initialize it for correct results and bufferization
+    // Step 3: Pad input if padding is non-zero.
+    // linalg.conv_2d_nchw_fchw does NOT handle padding internally.
+    // We must explicitly pad the input tensor on H and W dims with zeros.
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
     auto elementType = outputType.getElementType();
 
-    Value emptyTensor = tensor::EmptyOp::create(
-        rewriter, loc,
-        outputType.getShape(),
-        elementType
-    );
-
-    // Create zero constant and fill the output tensor
     Value zero = arith::ConstantOp::create(
         rewriter, loc,
         elementType,
         rewriter.getZeroAttr(elementType)
     );
+
+    int64_t padH = padding[0];
+    int64_t padW = padding[1];
+    if (padH != 0 || padW != 0) {
+      // Pad format: [N_low, C_low, H_low, W_low] and [N_high, C_high, H_high, W_high]
+      // Only pad spatial dims (H, W), not batch (N) or channel (C).
+      SmallVector<int64_t> lowPad = {0, 0, padH, padW};
+      SmallVector<int64_t> highPad = {0, 0, padH, padW};
+
+      // Compute padded input type
+      auto inputType = mlir::cast<RankedTensorType>(input.getType());
+      SmallVector<int64_t> paddedShape(inputType.getShape());
+      paddedShape[2] += 2 * padH;
+      paddedShape[3] += 2 * padW;
+      auto paddedType = RankedTensorType::get(paddedShape, elementType);
+
+      // PadOp needs a body region that yields the pad value (zero).
+      auto padOp = rewriter.create<tensor::PadOp>(
+          loc, paddedType, input,
+          lowPad, highPad,
+          /*low=*/ValueRange{}, /*high=*/ValueRange{});
+
+      // Build the body: yield zero for all padded positions
+      auto &region = padOp.getRegion();
+      auto *block = rewriter.createBlock(&region);
+      for (int i = 0; i < paddedType.getRank(); i++)
+        block->addArgument(rewriter.getIndexType(), loc);
+      rewriter.setInsertionPointToEnd(block);
+      rewriter.create<tensor::YieldOp>(loc, zero);
+
+      input = padOp.getResult();
+      // Restore insertion point after the pad op
+      rewriter.setInsertionPointAfter(padOp);
+    }
+
+    // Step 4: Create output tensor and initialize to zero
+    Value emptyTensor = tensor::EmptyOp::create(
+        rewriter, loc,
+        outputType.getShape(),
+        elementType
+    );
     Value output = linalg::FillOp::create(rewriter, loc, zero, emptyTensor)
                        .getResult(0);
 
-    // Step 4: Create linalg.conv_2d_nchw_fchw
+    // Step 5: Create linalg.conv_2d_nchw_fchw
     auto conv = linalg::Conv2DNchwFchwOp::create(
         rewriter, loc,
         outputType,
@@ -107,7 +142,7 @@ struct ConvOpLowering : public OpConversionPattern<gawee::ConvOp> {
         dilations
     );
 
-    // Step 5: Add bias
+    // Step 6: Add bias
     // bias shape: [out_channels] (1D), conv output: [N, C, H, W] (4D)
     // Need to broadcast bias across N, H, W dims using linalg.generic
     Value convResult = conv.getResults()[0];
@@ -146,7 +181,7 @@ struct ConvOpLowering : public OpConversionPattern<gawee::ConvOp> {
         }
     );
 
-    // Step 6: Replace original op with conv + bias result
+    // Step 7: Replace original op with conv + bias result
     rewriter.replaceOp(op, biasAdd.getResults());
 
     return success();
@@ -276,41 +311,62 @@ struct MaxPoolOpLowering : public OpConversionPattern<gawee::MaxPoolOp> {
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    // Step 1: Get all features.  
+    // Step 1: Get all features.
     Value input = adaptor.getInput();
-    auto kernelSize = adaptor.getKernelSizeAttr(); 
-    auto strides = adaptor.getStridesAttr(); 
-    auto padding = adaptor.getPaddingAttr(); 
-    auto dilation = adaptor.getDilationAttr();  
-    auto ceilMode = adaptor.getCeilMode();
+    auto strides = adaptor.getStridesAttr();
+    auto padding = adaptor.getPadding(); // ArrayRef<int64_t>
+    auto dilation = adaptor.getDilationAttr();
 
     // Step 2: Get output type and create empty output tensor
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
-    auto elementType = outputType.getElementType();  
-    
-    // scaffold. It's destination which calculated result will be saved.  
-    Value emptyTensor = tensor::EmptyOp::create(
-        rewriter,loc,
-        outputType.getShape(),
-        elementType
-    );
+    auto elementType = outputType.getElementType();
 
-    // how to genreate neg inf?
+    // -inf is the identity element for max (same reason conv uses 0).
     auto negInf = arith::ConstantOp::create(rewriter, loc,
       rewriter.getFloatAttr(elementType, -std::numeric_limits<double>::infinity())
     );
-    auto filledOutput = linalg::FillOp::create(rewriter, loc, negInf.getResult(), emptyTensor);
 
-    // window tensor to let mlir know the shape kernel.
-    // Use non-Attr version (ArrayRef<int64_t>) for EmptyOp, not DenseI64ArrayAttr.
-    Value windowTensor = tensor::EmptyOp::create(rewriter, loc, adaptor.getKernelSize(), elementType
-    );
+    // Step 3: Pad input with -inf if padding is non-zero.
+    // Same issue as Conv: linalg.pooling_nchw_max does NOT handle padding.
+    int64_t padH = padding[0];
+    int64_t padW = padding[1];
+    if (padH != 0 || padW != 0) {
+      SmallVector<int64_t> lowPad = {0, 0, padH, padW};
+      SmallVector<int64_t> highPad = {0, 0, padH, padW};
 
+      auto inputType = mlir::cast<RankedTensorType>(input.getType());
+      SmallVector<int64_t> paddedShape(inputType.getShape());
+      paddedShape[2] += 2 * padH;
+      paddedShape[3] += 2 * padW;
+      auto paddedType = RankedTensorType::get(paddedShape, elementType);
 
-    // Step 3: Create linalg.pooling_nchw_max
+      // Pad with -inf (not 0!) so padded positions never win the max.
+      auto padOp = rewriter.create<tensor::PadOp>(
+          loc, paddedType, input,
+          lowPad, highPad,
+          /*low=*/ValueRange{}, /*high=*/ValueRange{});
+      auto &region = padOp.getRegion();
+      auto *block = rewriter.createBlock(&region);
+      for (int i = 0; i < paddedType.getRank(); i++)
+        block->addArgument(rewriter.getIndexType(), loc);
+      rewriter.setInsertionPointToEnd(block);
+      rewriter.create<tensor::YieldOp>(loc, negInf.getResult());
+      input = padOp.getResult();
+      rewriter.setInsertionPointAfter(padOp);
+    }
+
+    // Step 4: Create output filled with -inf and window tensor.
+    Value emptyTensor = tensor::EmptyOp::create(
+        rewriter, loc, outputType.getShape(), elementType);
+    auto filledOutput = linalg::FillOp::create(
+        rewriter, loc, negInf.getResult(), emptyTensor);
+
+    Value windowTensor = tensor::EmptyOp::create(
+        rewriter, loc, adaptor.getKernelSize(), elementType);
+
+    // Step 5: Create linalg.pooling_nchw_max
     auto maxPoolOp = linalg::PoolingNchwMaxOp::create(
         rewriter, loc, outputType,
-        // ValueRange is a container which has Values.
         ValueRange{input, windowTensor}, filledOutput.getResult(0),
         strides,
         dilation
