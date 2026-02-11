@@ -47,24 +47,34 @@ OwningOpRef<ModuleOp> MLIREmitter::emit(const llvm::json::Object &graph) {
     return nullptr;
   }
 
-  // First pass: collect all weight tensors from Conv nodes
-  // These will become function arguments
+  // First pass: collect all weight/bias tensors from Conv and MatMul nodes.
+  // These become function arguments because they are constant parameters,
+  // not computed tensors flowing through the graph.
   for (const auto &nodeVal : *nodes) {
     const auto *node = nodeVal.getAsObject();
     if (!node) continue;
     auto opType = node->getString("op_type");
-    if (opType && *opType == "Conv") {
-      const auto *attrs = node->getObject("attrs");
-      if (attrs) {
-        const auto *weightInfo = attrs->getObject("weight");
-        if (weightInfo) {
-          auto weightType = parseShape(weightInfo->getArray("shape"));
-          if (weightType) {
-            // Generate unique weight name
-            auto nodeName = node->getString("name");
-            std::string weightName = nodeName ? nodeName->str() + "_weight" : "weight";
-            weightArgs.push_back({weightName, weightType});
-          }
+    const auto *attrs = node->getObject("attrs");
+    if (!attrs) continue;
+    auto nodeName = node->getString("name");
+
+    if ((opType && *opType == "Conv") || (opType && *opType == "MatMul")) {
+      // Collect weight
+      const auto *weightInfo = attrs->getObject("weight");
+      if (weightInfo) {
+        auto weightType = parseShape(weightInfo->getArray("shape"));
+        if (weightType) {
+          std::string weightName = nodeName ? nodeName->str() + "_weight" : "weight";
+          weightArgs.push_back({weightName, weightType});
+        }
+      }
+      // Collect bias
+      const auto *biasInfo = attrs->getObject("bias");
+      if (biasInfo) {
+        auto biasType = parseShape(biasInfo->getArray("shape"));
+        if (biasType) {
+          std::string biasName = nodeName ? nodeName->str() + "_bias" : "bias";
+          weightArgs.push_back({biasName, biasType});
         }
       }
     }
@@ -186,11 +196,17 @@ bool MLIREmitter::emitNode(const llvm::json::Object &node,
     return emitRelu(node, values);
   } else if (*opType == "Add") {
     return emitAdd(node, values);
+  } else if (*opType == "MaxPool") {
+    return emitMaxPool(node, values);
+  } else if (*opType == "AdAvgPool") {
+    return emitAdAvgPool(node, values);
+  } else if (*opType == "flatten") {
+    return emitFlatten(node, values);
+  } else if (*opType == "MatMul") {
+    return emitLinear(node, values);
   } else {
-    // Skip unsupported ops (e.g., MaxPool, BatchNorm)
-    // In partial support mode, we just ignore them
-    llvm::errs() << "Warning: Skipping unsupported op: " << *opType << "\n";
-    return true;
+    setError("Unsupported op type: " + *opType);
+    return false;
   }
 }
 
@@ -239,13 +255,19 @@ bool MLIREmitter::emitConv(const llvm::json::Object &node,
     return false;
   }
 
-  // Get weight from function arguments
-  // Weight was collected in first pass and added as function argument
+  // Get weight and bias from function arguments
+  // They were collected in first pass and added as function arguments
   auto nodeName = node.getString("name");
   std::string weightName = nodeName ? nodeName->str() + "_weight" : "weight";
+  std::string biasName = nodeName ? nodeName->str() + "_bias" : "bias";
   Value weight = lookupValue(weightName);
+  Value bias = lookupValue(biasName);
   if (!weight) {
     setError("Conv: weight not found: " + weightName);
+    return false;
+  }
+  if (!bias) {
+    setError("Conv: bias not found: " + biasName);
     return false;
   }
 
@@ -266,9 +288,9 @@ bool MLIREmitter::emitConv(const llvm::json::Object &node,
   auto padding = getArrayAttr("padding");
   auto dilation = getArrayAttr("dilation");
 
-  // Create gawee.conv op
+  // Create gawee.conv op (input, weight, bias, strides, padding, dilation)
   auto convOp = builder->create<ConvOp>(
-      loc, resultType, input, weight,
+      loc, resultType, input, weight, bias,
       builder->getDenseI64ArrayAttr(strides),
       builder->getDenseI64ArrayAttr(padding),
       builder->getDenseI64ArrayAttr(dilation));
@@ -374,6 +396,281 @@ bool MLIREmitter::emitAdd(const llvm::json::Object &node,
 
   // Map output name to result
   valueMap[outputName->str()] = addOp.getResult();
+  return true;
+}
+
+//===----------------------------------------------------------------------===//
+// Max pooling.  
+//===----------------------------------------------------------------------===//
+
+bool MLIREmitter::emitMaxPool(const llvm::json::Object &node,
+                          const llvm::json::Object &values) {
+  auto loc = builder->getUnknownLoc();
+
+  // Get input
+  // json returns pointer and it returns nullptr when there is no value. 
+  const auto *inputs = node.getArray("inputs");
+  if (!inputs || inputs->empty()) {
+    setError("MaxPool: missing inputs");
+    return false;
+  }
+  auto inputName = (*inputs)[0].getAsString();
+  Value input = lookupValue(*inputName);
+  if (!input) {
+    setError("MaxPool: input not found: " + *inputName);
+    return false;
+  }
+
+  // Get output info for result type
+  const auto *outputs = node.getArray("outputs");
+  if (!outputs || outputs->empty()) {
+    setError("MaxPool: missing outputs");
+    return false;
+  }
+  auto outputName = (*outputs)[0].getAsString();
+  const auto *outputInfo = values.getObject(*outputName);
+  if (!outputInfo) {
+    setError("MaxPool: output not found in values: " + *outputName);
+    return false;
+  }
+  auto resultType = parseShape(outputInfo->getArray("shape"));
+  if (!resultType) {
+    return false;
+  }
+
+  // Get attributes
+  const auto *attrs = node.getObject("attrs");
+  if (!attrs) {
+    setError("MaxPool: missing attrs");
+    return false;
+  }
+
+  // FIX: JSON field names use snake_case (kernel_size, ceil_mode),
+  //   not camelCase (kernelSize, ceilMode).
+  // FIX: MaxPool attrs in graph.json can be scalar int (3) or array ([3,3]).
+  //   Must handle both — normalize scalar to 2-element array [v, v].
+  auto getI64OrArray = [&](const char *name) -> SmallVector<int64_t> {
+    SmallVector<int64_t> result;
+    // Try as array first
+    if (const auto *arr = attrs->getArray(name)) {
+      for (const auto &v : *arr) {
+        if (auto i = v.getAsInteger()) result.push_back(*i);
+      }
+    } else if (auto scalar = attrs->getInteger(name)) {
+      // Scalar int → duplicate for H and W
+      result.push_back(*scalar);
+      result.push_back(*scalar);
+    }
+    return result;
+  };
+
+  auto ceilMode = attrs->getBoolean("ceil_mode");
+
+  auto kernelSize = getI64OrArray("kernel_size");
+  auto strides = getI64OrArray("stride");
+  auto padding = getI64OrArray("padding");
+  auto dilation = getI64OrArray("dilation");
+
+  // Create gawee.max_pool op
+  auto maxPoolOp = builder->create<MaxPoolOp>(
+      loc, resultType, input,
+      builder->getDenseI64ArrayAttr(kernelSize),
+      builder->getDenseI64ArrayAttr(strides),
+      builder->getDenseI64ArrayAttr(padding),
+      builder->getDenseI64ArrayAttr(dilation),
+      builder->getBoolAttr(ceilMode.value_or(false)));
+
+  // Map output name to result
+  valueMap[outputName->str()] = maxPoolOp.getResult();
+  return true;
+}
+
+//===----------------------------------------------------------------------===//
+// Adaptive average pooling.  
+//===----------------------------------------------------------------------===//
+
+bool MLIREmitter::emitAdAvgPool(const llvm::json::Object &node,
+                          const llvm::json::Object &values) {
+  auto loc = builder->getUnknownLoc();
+
+  // Get input
+  const auto *inputs = node.getArray("inputs");
+  if (!inputs || inputs->empty()) {
+    setError("AdAvgPool: missing inputs");
+    return false;
+  }
+  auto inputName = (*inputs)[0].getAsString();  
+  Value input = lookupValue(*inputName);
+  if (!input) {
+    setError("AdAvgPool: input not found: " + *inputName);
+    return false;
+  }
+
+  // Get output info for result type
+  const auto *outputs = node.getArray("outputs");
+  if (!outputs || outputs->empty()) {
+    setError("AdAvgPool: missing outputs");
+    return false;
+  }
+  auto outputName = (*outputs)[0].getAsString();
+  const auto *outputInfo = values.getObject(*outputName);
+  if (!outputInfo) {
+    setError("AdAvgPool: output not found in values: " + *outputName);
+    return false;
+  }
+  auto resultType = parseShape(outputInfo->getArray("shape"));
+  if (!resultType) {
+    return false;
+  }
+
+  // Get attributes
+  const auto *attrs = node.getObject("attrs");
+  if (!attrs) {
+    setError("AdAvgPool: missing attrs");
+    return false;
+  }
+
+  // Extract output_size array
+  SmallVector<int64_t> outputSize;
+  if (const auto *arr = attrs->getArray("output_size")) {
+    for (const auto &v : *arr) {
+      if (auto i = v.getAsInteger()) outputSize.push_back(*i);
+    }
+  }
+
+  // FIX: Was MaxPoolOp (copy-paste). Must use AdAvgPoolOp.
+  // FIX: JSON field is "output_size", not "outputSize".
+  auto adAvgPoolOp = builder->create<AdAvgPoolOp>(
+      loc, resultType, input,
+      builder->getDenseI64ArrayAttr(outputSize));
+
+  // Map output name to result
+  valueMap[outputName->str()] = adAvgPoolOp.getResult();
+  return true;
+}
+
+//===----------------------------------------------------------------------===//
+// Flatten Operation.  
+//===----------------------------------------------------------------------===//
+
+bool MLIREmitter::emitFlatten(const llvm::json::Object &node,
+                          const llvm::json::Object &values) {
+  auto loc = builder->getUnknownLoc();
+
+  // Get input
+  const auto *inputs = node.getArray("inputs");
+  if (!inputs || inputs->empty()) {
+    setError("Flatten: missing inputs");
+    return false;
+  }
+  auto inputName = (*inputs)[0].getAsString();  
+  Value input = lookupValue(*inputName);
+  if (!input) {
+    setError("Flatten: input not found: " + *inputName);
+    return false;
+  }
+
+  // Get output info for result type
+  const auto *outputs = node.getArray("outputs");
+  if (!outputs || outputs->empty()) {
+    setError("Flatten: missing outputs");
+    return false;
+  }
+  auto outputName = (*outputs)[0].getAsString();
+  const auto *outputInfo = values.getObject(*outputName);
+  if (!outputInfo) {
+    setError("Flatten: output not found in values: " + *outputName);
+    return false;
+  }
+  auto resultType = parseShape(outputInfo->getArray("shape"));
+  if (!resultType) {
+    return false;
+  }
+
+  // Get attributes
+  const auto *attrs = node.getObject("attrs");
+  if (!attrs) {
+    setError("Flatten: missing attrs");
+    return false;
+  }
+
+  // FIX: Was MaxPoolOp (copy-paste). Must use FlattenOp.
+  // FIX: start_dim/end_dim are single ints (I64Attr), not arrays (DenseI64ArrayAttr).
+  //   JSON field names: "start_dim", "end_dim" (snake_case).
+  auto startDim = attrs->getInteger("start_dim").value_or(1);
+  auto endDim = attrs->getInteger("end_dim").value_or(-1);
+
+  // Create gawee.flatten op
+  auto flattenOp = builder->create<FlattenOp>(
+      loc, resultType, input,
+      builder->getI64IntegerAttr(startDim),
+      builder->getI64IntegerAttr(endDim));
+
+  // Map output name to result
+  valueMap[outputName->str()] = flattenOp.getResult();
+  return true;
+}
+
+
+//===----------------------------------------------------------------------===//
+// Linear emission  
+//===----------------------------------------------------------------------===//
+
+bool MLIREmitter::emitLinear(const llvm::json::Object &node,
+                             const llvm::json::Object &values) {
+  auto loc = builder->getUnknownLoc();
+
+  // Get input
+  const auto *inputs = node.getArray("inputs");
+  if (!inputs || inputs->empty()) {
+    setError("Linear: missing inputs");
+    return false;
+  }
+  auto inputName = (*inputs)[0].getAsString();
+  Value input = lookupValue(*inputName);
+  if (!input) {
+    setError("Linear: input not found: " + *inputName);
+    return false;
+  }
+
+  // Get output info for result type
+  const auto *outputs = node.getArray("outputs");
+  if (!outputs || outputs->empty()) {
+    setError("Linear: missing outputs");
+    return false;
+  }
+  auto outputName = (*outputs)[0].getAsString();
+  const auto *outputInfo = values.getObject(*outputName);
+  if (!outputInfo) {
+    setError("Linear: output not found in values: " + *outputName);
+    return false;
+  }
+  auto resultType = parseShape(outputInfo->getArray("shape"));
+  if (!resultType) {
+    return false;
+  }
+
+  // FIX: Was missing weight and bias. LinearOp needs (input, weight, bias).
+  //   Weight/bias are collected in first pass (same pattern as Conv).
+  //   JSON op_type is "MatMul" but we emit gawee.linear.
+  auto nodeName = node.getString("name");
+  std::string weightName = nodeName ? nodeName->str() + "_weight" : "weight";
+  std::string biasName = nodeName ? nodeName->str() + "_bias" : "bias";
+  Value weight = lookupValue(weightName);
+  Value bias = lookupValue(biasName);
+  if (!weight) {
+    setError("Linear: weight not found: " + weightName);
+    return false;
+  }
+  if (!bias) {
+    setError("Linear: bias not found: " + biasName);
+    return false;
+  }
+  auto linearOp = builder->create<LinearOp>(
+      loc, resultType, input, weight, bias);
+
+  // Map output name to result
+  valueMap[outputName->str()] = linearOp.getResult();
   return true;
 }
 

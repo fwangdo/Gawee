@@ -216,7 +216,7 @@ was already applied at the frontend. Conv nodes carry fused weight+bias.
 | Implement Flatten lowering | ✅ Done | GaweeToLinalg.cpp |
 | Implement Linear lowering | ✅ Done | GaweeToLinalg.cpp |
 | Register all new patterns in pass | ✅ Done | GaweeToLinalg.cpp |
-| Extend MLIREmitter for new ops | ⬚ Todo | MLIREmitter.cpp |
+| Extend MLIREmitter for new ops | ✅ Done | MLIREmitter.cpp |
 | Full ResNet inference | ⬚ Todo | - |
 
 **Goal:** Full support for ResNet model. User will extend based on patterns learned.
