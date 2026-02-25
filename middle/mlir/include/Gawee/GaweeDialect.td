@@ -76,6 +76,7 @@ def Gawee_Dialect : Dialect {
 // This ensures they all belong to the Gawee dialect.
 //
 
+
 class Gawee_Op<string mnemonic, list<Trait> traits = []> :
     Op<Gawee_Dialect, mnemonic, traits>;
 

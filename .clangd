@@ -1,0 +1,7 @@
+CompileFlags:
+  CompilationDatabase: middle/mlir/build/
+  Add: [
+    "-I/Users/hdy/llvm-install/include",
+    "-I/Users/hdy/llvm-install/include/mlir"
+    "--resource-dir=/Library/Developer/CommandLineTools/usr/lib/clang/17"
+  ]

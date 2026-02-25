@@ -2,6 +2,7 @@
 /onnxdata
 /torchdata
 /jsondata
+/cv
 
 # Python
 __pycache__/
