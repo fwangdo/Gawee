@@ -128,17 +128,23 @@ class TorchParser:
         for arg in node.all_input_nodes:
             ins.append(cls.env[arg.name])
 
-        # output shape/dtype from PyTorch's ShapeProp
-        shape = cls._get_shape(node)
-        dtype = cls._get_dtype(node)
+        op_type = Mapper.translate(node, cls.gm)
+
+        # getattr(tensor, "shape"/"dtype") and getitem(shape, idx) return
+        # Python values, not tensors.  Force shape/dtype to None so that
+        # downstream passes (PythonOpElimination) treat them correctly.
+        if op_type in (GETATTR, GETITEM):
+            shape = None
+            dtype = None
+        else:
+            shape = cls._get_shape(node)
+            dtype = cls._get_dtype(node)
 
         out = cls.g.get_value(
             name=node.name,
             shape=shape,
             dtype=dtype,
         )
-
-        op_type = Mapper.translate(node, cls.gm)
         attrs = AttrExtractor.extract(node)
 
         n = Node(

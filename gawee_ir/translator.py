@@ -151,7 +151,8 @@ class Translator:
         # Serialize attributes, exporting tensors as binary files.
         serialized_attrs: Dict[str, JSON_TYPE] = {}
         for key, val in raw_attrs.items():
-            assert val is not None, f'[ERROR]: value of {key} is None'
+            if val is None:
+                continue
             serialized_attrs[key] = self._serialize_attr(key, val, n.raw_name)
 
         return {
