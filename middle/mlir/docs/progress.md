@@ -1,310 +1,217 @@
-# Gawee MLIR Compiler - Progress Tracker
+# Gawee MLIR Compiler - UNet Progress Tracker
 
 ## Overview
 
-Building an AI compiler from scratch using MLIR infrastructure.
+Extending the Gawee compiler to support UNet inference.
+ResNet-18 pipeline is complete (see `progress_resnet.md`).
 
 ```
-Goal: Neural Network Model → Optimized Executable
+Goal: UNet JSON (116 nodes) → Full MLIR → LLVM IR
 
-Pipeline:
-  Frontend → Gawee Dialect → Linalg → SCF/Affine → LLVM → Binary
+Missing ops: cat (4 nodes), interpolate (5 nodes)
+Existing ops already working: Conv (47), Relu (43), Add (16), MaxPool (1)
 ```
 
 ---
 
-## Phase 1: Infrastructure Setup ✅
+## Phase 9: gawee.cat — Tensor Concatenation
+
+### 9-1. Op Definition (TableGen) ⬚
 
 | Task | Status | Files |
 |------|--------|-------|
-| LLVM/MLIR installation | ✅ Done | ~/llvm-install/ |
-| CMake build system | ✅ Done | CMakeLists.txt |
-| Build script | ✅ Done | build.sh |
-| TableGen workaround (string literal bug) | ✅ Done | build.sh (sed fix) |
-| compile_commands.json for IDE | ✅ Done | build.sh, .clangd |
+| Define `gawee.cat` in TableGen | ⬚ Todo | include/Gawee/GaweeOps.td |
+| Rebuild to generate .inc files | ⬚ Todo | build.sh |
 
-**Key learnings:**
-- CMake finds MLIR via `find_package(MLIR REQUIRED CONFIG)`
-- `CMAKE_EXPORT_COMPILE_COMMANDS=ON` generates compile_commands.json
-- TableGen has a bug in some versions - need sed workaround
+**Op spec:**
+```
+Inputs:  Variadic<AnyTensor>:$inputs
+Attrs:   I64Attr:$axis
+Output:  AnyTensor:$result
+```
+
+**Key points:**
+- Variadic input (여러 텐서를 받아야 함)
+- `axis` = concatenation dimension (UNet에서 channel 축, dim=1)
+- 기존 Add op과 유사하지만 입력이 가변적
 
 ---
 
-## Phase 2: Gawee Dialect Definition ✅
+### 9-2. MLIREmitter — emitCat ⬚
 
 | Task | Status | Files |
 |------|--------|-------|
-| Dialect declaration (.td) | ✅ Done | include/Gawee/GaweeDialect.td |
-| Op definitions (.td) | ✅ Done | include/Gawee/GaweeOps.td |
-| C++ dialect implementation | ✅ Done | lib/Gawee/GaweeDialect.cpp |
-| Generated headers | ✅ Done | include/Gawee/generated/*.inc |
+| Add `emitCat()` to MLIREmitter | ⬚ Todo | lib/Emit/MLIREmitter.cpp |
+| Handle variadic inputs from JSON | ⬚ Todo | lib/Emit/MLIREmitter.cpp |
 
-**Ops defined:**
-- `gawee.conv` - 2D convolution (input, weight, strides, padding, dilation)
-- `gawee.relu` - ReLU activation
-- `gawee.add` - Elementwise addition
-
-**Key learnings:**
-- TableGen generates C++ from .td files
-- `DenseI64ArrayAttr:$name` generates `getName()` and `getNameAttr()`
-- Ops need arguments (ins) and results (outs)
+**Key points:**
+- JSON의 `inputs` 배열에서 여러 입력 텐서를 읽어야 함
+- `attrs`에서 `axis` 추출
+- 출력 shape 계산: concat 축만 합산, 나머지 동일
 
 ---
 
-## Phase 3: Gawee → Linalg Conversion ✅
+### 9-3. CatOpLowering (Gawee → Linalg) ⬚
 
 | Task | Status | Files |
 |------|--------|-------|
-| ConvOpLowering | ✅ Done | lib/Conversion/GaweeToLinalg.cpp |
-| ReluOpLowering | ✅ Done | lib/Conversion/GaweeToLinalg.cpp |
-| AddOpLowering | ✅ Done | lib/Conversion/GaweeToLinalg.cpp |
-| Pass definition | ✅ Done | lib/Conversion/GaweeToLinalg.cpp |
-| Summary document | ✅ Done | docs/GaweeToLinalg_Summary.md |
-| Quiz file | ✅ Done | docs/GaweeToLinalg_Quiz.cpp |
+| Implement CatOpLowering | ⬚ Todo | lib/Conversion/GaweeToLinalg.cpp |
+| Register pattern in pass | ⬚ Todo | lib/Conversion/GaweeToLinalg.cpp |
 
-**Conversion mappings:**
+**Lowering strategy:**
 ```
-gawee.conv  → linalg.conv_2d_nchw_fchw
-gawee.relu  → linalg.generic (max(0, x))
-gawee.add   → linalg.add
+gawee.cat(%a, %b, axis=1)
+  → %out = tensor.empty(...)
+  → %s0 = tensor.insert_slice %a into %out[0,0,...][Sa,...][1,1,...]
+  → %s1 = tensor.insert_slice %b into %s0[0,Ca,...][Sb,...][1,1,...]
 ```
 
-**Key learnings:**
-- `OpConversionPattern<T>` rewrites op T to other ops
-- `adaptor` = converted operands, `op` = original op with attributes
-- Linalg uses destination-passing style (create empty output first)
-- `linalg.generic` = Swiss army knife for custom elementwise ops
-- `ConversionTarget`: legal = can remain, illegal = must convert
+**Key points:**
+- `tensor.insert_slice`를 입력 개수만큼 반복
+- offset은 concat 축에서만 누적, 나머지 축은 0
+- destination-passing style 유지
 
 ---
 
-## Phase 4: gawee-opt Tool ✅
+### 9-4. Cat 테스트 ⬚
 
 | Task | Status | Files |
 |------|--------|-------|
-| Create gawee-opt executable | ✅ Done | tools/gawee-opt.cpp |
-| Register dialects | ✅ Done | tools/gawee-opt.cpp |
-| Register passes | ✅ Done | tools/gawee-opt.cpp |
-| Update CMakeLists.txt | ✅ Done | CMakeLists.txt |
-| Add RTTI fix | ✅ Done | CMakeLists.txt |
-| Add getDependentDialects | ✅ Done | lib/Conversion/GaweeToLinalg.cpp |
-| Test with sample IR | ✅ Done | test/simple_test.mlir |
-| Summary document | ✅ Done | docs/gawee-opt_Summary.md |
-| Quiz file | ✅ Done | docs/gawee-opt_Quiz.cpp |
-
-**Result:** Tool works correctly:
-```bash
-./build/gawee-opt --convert-gawee-to-linalg test/simple_test.mlir
-```
-
-**Key learnings:**
-- Dialects must be registered in `DialectRegistry`
-- Passes must declare `getDependentDialects()` for dialects they create ops from
-- RTTI must be disabled (`-fno-rtti`) to match LLVM's build
-- `MlirOptMain` handles CLI, parsing, pass execution
-
----
-
-## Phase 5: Linalg → Loops ✅
-
-| Task | Status | Files |
-|------|--------|-------|
-| Add SCF dialect to gawee-opt | ✅ Done | tools/gawee-opt.cpp |
-| Add bufferization support | ✅ Done | tools/gawee-opt.cpp |
-| Full pipeline script | ✅ Done | scripts/full_pipeline.sh |
-| Test all ops | ✅ Done | test/simple_test.mlir |
-
-**Pipeline:**
-```
-Gawee → Linalg(tensor) → Bufferize → Linalg(memref) → SCF loops
-```
-
-**Key learnings:**
-- Linalg-to-loops works on memref, not tensor - need bufferization first
-- Bufferization converts tensor → memref (memory allocation)
-- MLIR provides built-in passes: `--one-shot-bufferize`, `--convert-linalg-to-loops`
-- Complex ops like conv2d become 7 nested loops
-
----
-
-## Phase 6: C++ Graph → Gawee MLIR (Frontend Connection) ✅
-
-| Task | Status | Files |
-|------|--------|-------|
-| Create MLIREmitter class | ✅ Done | include/Emit/MLIREmitter.h, lib/Emit/MLIREmitter.cpp |
-| Emit gawee.conv from Graph::Node | ✅ Done | lib/Emit/MLIREmitter.cpp |
-| Emit gawee.relu from Graph::Node | ✅ Done | lib/Emit/MLIREmitter.cpp |
-| Emit gawee.add from Graph::Node | ✅ Done | lib/Emit/MLIREmitter.cpp |
-| Create gawee-translate tool | ✅ Done | tools/gawee-translate.cpp |
-| Test with subset of graph.json | ✅ Done | test/subset_graph.json |
-| Summary document | ✅ Done | docs/MLIREmitter_Summary.md |
-| Quiz file | ✅ Done | docs/MLIREmitter_Quiz.cpp |
-| Build and test | ✅ Done | - |
-
-**Result:** Full pipeline works:
-```bash
-./build/gawee-translate test/subset_graph.json | ./build/gawee-opt --convert-gawee-to-linalg
-```
-
-**Key learnings:**
-- `mlir-translate` converts external formats ↔ MLIR
-- `OpBuilder` creates ops at current insertion point
-- Value mapping connects JSON string names to `mlir::Value`
-- LLVM JSON API uses Optional returns - always check validity
-- Topological order ensures inputs are defined before use
-- Weights must be function arguments (constant tensors can't bufferize)
-
----
-
-## Phase 7: SCF → LLVM → Binary ✅
-
-| Task | Status | Files |
-|------|--------|-------|
-| SCF to CF conversion | ✅ Done | tools/gawee-opt.cpp |
-| Arith to LLVM conversion | ✅ Done | tools/gawee-opt.cpp |
-| MemRef to LLVM conversion | ✅ Done | tools/gawee-opt.cpp |
-| CF to LLVM conversion | ✅ Done | tools/gawee-opt.cpp |
-| Func to LLVM conversion | ✅ Done | tools/gawee-opt.cpp |
-| LLVM dialect → LLVM IR script | ✅ Done | scripts/to_llvm_ir.sh |
-| Test file | ✅ Done | test/llvm_test.mlir |
-| Summary document | ✅ Done | docs/LLVMLowering_Summary.md |
-| Quiz file | ✅ Done | docs/LLVMLowering_Quiz.cpp |
-
-**Result:** Full pipeline to LLVM IR works:
-```bash
-./build/gawee-opt --scf-to-llvm test/llvm_test.mlir
-./scripts/to_llvm_ir.sh test/llvm_test.mlir output.ll
-```
-
-**Key learnings:**
-- Lowering is hierarchical: High-level → Mid-level → Low-level → Target
-- SCF (for/while) → CF (branches) via `scf-to-cf` pass
-- MemRef → LLVM struct with pointer, offset, sizes, strides
-- Multiple conversion passes needed, order matters
-- `reconcile-unrealized-casts` cleans up temporary markers
-- `mlir-translate --mlir-to-llvmir` converts LLVM dialect to LLVM IR
-- **Bufferization interfaces must be registered** for each dialect (arith, linalg, tensor, func)
-
----
-
-## Phase 8: Extend for ResNet (User's Own Work)
-
-**graph.json analysis (ResNet-18, 48 nodes):**
-
-| Op in graph.json | Count | In GaweeOps.td? | Lowering? |
-|-----------------|-------|-----------------|-----------|
-| `Conv` | 20 | ✅ Yes | ✅ Done (+ bias broadcast) |
-| `Relu` | 16 | ✅ Yes | ✅ Done |
-| `Add` | 8 | ✅ Yes | ✅ Done |
-| `MaxPool` | 1 | ✅ Yes | ✅ Done |
-| `AdAvgPool` (AdaptiveAvgPool2d) | 1 | ✅ Yes | ✅ Done (sum pool + divf) |
-| `flatten` | 1 | ✅ Yes | ✅ Done (collapse_shape) |
-| `MatMul` (Linear) | 1 | ✅ Yes | ✅ Done (matmul_transpose_b + bias) |
-
-**Note:** BatchNorm does not appear in graph.json because conv-bn fusion
-was already applied at the frontend. Conv nodes carry fused weight+bias.
-
-| Task | Status | Files |
-|------|--------|-------|
-| Add MaxPool op to dialect | ✅ Done | GaweeOps.td |
-| Add AdaptiveAvgPool op to dialect | ✅ Done | GaweeOps.td |
-| Add Flatten op to dialect | ✅ Done | GaweeOps.td |
-| Add Linear op to dialect | ✅ Done | GaweeOps.td |
-| Add bias to Conv lowering | ✅ Done | GaweeToLinalg.cpp |
-| Implement MaxPool lowering | ✅ Done | GaweeToLinalg.cpp |
-| Implement AdAvgPool lowering | ✅ Done | GaweeToLinalg.cpp |
-| Implement Flatten lowering | ✅ Done | GaweeToLinalg.cpp |
-| Implement Linear lowering | ✅ Done | GaweeToLinalg.cpp |
-| Register all new patterns in pass | ✅ Done | GaweeToLinalg.cpp |
-| Extend MLIREmitter for new ops | ✅ Done | MLIREmitter.cpp |
-| Full ResNet inference | ⬚ Todo | - |
-
-**Goal:** Full support for ResNet model. User will extend based on patterns learned.
-
-**Note:** This follows the same patterns as Phase 2-3. Repeat the process for each new op.
-
----
-
-## File Structure
-
-```
-middle/mlir/
-├── CMakeLists.txt           # Build configuration
-├── build.sh                 # Build script
-├── .clangd                  # IDE configuration
-├── include/
-│   ├── Gawee/
-│   │   ├── GaweeDialect.td  # Dialect TableGen
-│   │   ├── GaweeDialect.h   # Dialect C++ header
-│   │   ├── GaweeOps.td      # Ops TableGen
-│   │   └── generated/       # Generated .inc files
-│   └── Emit/
-│       └── MLIREmitter.h    # JSON→MLIR emitter header
-├── lib/
-│   ├── Gawee/
-│   │   └── GaweeDialect.cpp # Dialect implementation
-│   ├── Conversion/
-│   │   └── GaweeToLinalg.cpp # Conversion pass
-│   └── Emit/
-│       └── MLIREmitter.cpp  # JSON→MLIR emitter implementation
-├── tools/
-│   ├── gawee-opt.cpp        # Optimizer tool (incl. LLVM lowering)
-│   └── gawee-translate.cpp  # Translator tool (JSON→MLIR)
-├── scripts/
-│   ├── full_pipeline.sh     # Gawee → Loops pipeline
-│   └── to_llvm_ir.sh        # MLIR → LLVM IR pipeline
-├── test/
-│   ├── simple_test.mlir     # Test file (hand-written Gawee)
-│   ├── llvm_test.mlir       # Test file for LLVM lowering
-│   └── subset_graph.json    # Test JSON for translator
-└── docs/
-    ├── progress.md          # This file
-    ├── todo.md              # Study checklist
-    ├── GaweeToLinalg_Summary.md
-    ├── GaweeToLinalg_Quiz.cpp
-    ├── gawee-opt_Summary.md
-    ├── gawee-opt_Quiz.cpp
-    ├── LinalgToLoops_Summary.md
-    ├── LinalgToLoops_Quiz.md
-    ├── MLIREmitter_Summary.md
-    ├── MLIREmitter_Quiz.cpp
-    ├── LLVMLowering_Summary.md
-    └── LLVMLowering_Quiz.cpp
-```
-
----
-
-## Commands Reference
+| Hand-written cat test MLIR | ⬚ Todo | test/cat_test.mlir |
+| Cat end-to-end with gawee-opt | ⬚ Todo | - |
+| Summary document | ⬚ Todo | docs/Cat_Summary.md |
+| Quiz file | ⬚ Todo | docs/Cat_Quiz.cpp |
 
 ```bash
-# Build everything
-./build.sh
-
-# gawee-opt: Transform MLIR
-./build/gawee-opt --help
-./build/gawee-opt --convert-gawee-to-linalg test/simple_test.mlir
-./build/gawee-opt --gawee-to-loops test/simple_test.mlir
-./build/gawee-opt --scf-to-llvm test/llvm_test.mlir
-
-# gawee-translate: JSON → MLIR
-./build/gawee-translate test/subset_graph.json
-./build/gawee-translate test/subset_graph.json -o output.mlir
-
-# Full pipeline: JSON → MLIR → Linalg
-./build/gawee-translate test/subset_graph.json | ./build/gawee-opt --convert-gawee-to-linalg
-
-# Full pipeline: JSON → MLIR → LLVM dialect
-./build/gawee-translate test/subset_graph.json | ./build/gawee-opt --gawee-to-llvm
-
-# Full pipeline: MLIR → LLVM IR
-./scripts/to_llvm_ir.sh test/llvm_test.mlir output.ll
+# 테스트 명령어
+./build/gawee-opt --convert-gawee-to-linalg test/cat_test.mlir
 ```
 
 ---
 
-## Notes & Decisions
+## Phase 10: gawee.interpolate — Upsampling
 
-- Using LLVM 16+ (new cast syntax: `mlir::cast<T>(value)`)
-- NCHW format for convolution (batch, channels, height, width)
-- Linalg destination-passing style for all ops
-- `rewriter.create<>()` is deprecated but still works (ignore warnings for now)
+### 10-1. Op Definition (TableGen) ⬚
+
+| Task | Status | Files |
+|------|--------|-------|
+| Define `gawee.interpolate` in TableGen | ⬚ Todo | include/Gawee/GaweeOps.td |
+| Rebuild to generate .inc files | ⬚ Todo | build.sh |
+
+**Op spec:**
+```
+Inputs:  AnyTensor:$input
+Attrs:   DenseI64ArrayAttr:$scale_factor, StrAttr:$mode
+Output:  AnyTensor:$result
+```
+
+**Key points:**
+- `scale_factor` = [2, 2] (UNet에서 2배 업샘플)
+- `mode` = "nearest" 또는 "bilinear"
+- nearest가 구현이 쉬움, bilinear은 인덱스 수학이 복잡
+
+---
+
+### 10-2. MLIREmitter — emitInterpolate ⬚
+
+| Task | Status | Files |
+|------|--------|-------|
+| Add `emitInterpolate()` to MLIREmitter | ⬚ Todo | lib/Emit/MLIREmitter.cpp |
+| Parse scale_factor and mode from JSON | ⬚ Todo | lib/Emit/MLIREmitter.cpp |
+
+**Key points:**
+- JSON `attrs`에서 `scale_factor`, `mode` 추출
+- 출력 shape = 입력 H×scale, W×scale (N, C는 동일)
+
+---
+
+### 10-3. InterpolateOpLowering (Gawee → Linalg) ⬚
+
+| Task | Status | Files |
+|------|--------|-------|
+| Implement InterpolateOpLowering (nearest) | ⬚ Todo | lib/Conversion/GaweeToLinalg.cpp |
+| Register pattern in pass | ⬚ Todo | lib/Conversion/GaweeToLinalg.cpp |
+
+**Lowering strategy (nearest):**
+```
+gawee.interpolate(%x, scale=[2,2], mode="nearest")
+  → %out = tensor.empty([N, C, H*2, W*2])
+  → linalg.generic {
+      // output index → input index
+      src_h = out_h / scale_h   (integer division = nearest neighbor)
+      src_w = out_w / scale_w
+      yield input[n, c, src_h, src_w]
+    }
+```
+
+**Key points:**
+- `linalg.generic`에서 `linalg.index` 사용하여 출력 좌표 계산
+- nearest: `src = dst / scale` (정수 나눗셈)
+- bilinear은 나중에 — nearest부터 구현
+- 이 lowering이 전체에서 **가장 어려운 부분**
+
+---
+
+### 10-4. Interpolate 테스트 ⬚
+
+| Task | Status | Files |
+|------|--------|-------|
+| Hand-written interpolate test MLIR | ⬚ Todo | test/interpolate_test.mlir |
+| Interpolate end-to-end with gawee-opt | ⬚ Todo | - |
+| Summary document | ⬚ Todo | docs/Interpolate_Summary.md |
+| Quiz file | ⬚ Todo | docs/Interpolate_Quiz.cpp |
+
+```bash
+# 테스트 명령어
+./build/gawee-opt --convert-gawee-to-linalg test/interpolate_test.mlir
+```
+
+---
+
+## Phase 11: Full UNet Pipeline ⬚
+
+| Task | Status | Files |
+|------|--------|-------|
+| gawee-translate with UNet JSON | ⬚ Todo | - |
+| gawee-opt Gawee → Linalg | ⬚ Todo | - |
+| gawee-opt full pipeline → LLVM | ⬚ Todo | - |
+| Verify all 116 nodes convert | ⬚ Todo | - |
+
+```bash
+# Step-by-step verification
+./build/gawee-translate jsondata/graph.json
+./build/gawee-translate jsondata/graph.json | ./build/gawee-opt --convert-gawee-to-linalg
+./build/gawee-translate jsondata/graph.json | ./build/gawee-opt --gawee-to-llvm
+```
+
+---
+
+## Recommended Order
+
+```
+9-1  gawee.cat TableGen 정의                      ← Easy
+9-2  emitCat (MLIREmitter)                        ← Easy
+9-3  CatOpLowering (insert_slice)                 ← Medium
+9-4  Cat 테스트                                    ← Verify
+
+10-1 gawee.interpolate TableGen 정의              ← Easy
+10-2 emitInterpolate (MLIREmitter)                ← Easy
+10-3 InterpolateOpLowering (nearest)              ← Hard
+10-4 Interpolate 테스트                            ← Verify
+
+11   Full UNet 파이프라인 통합 테스트              ← Final verify
+```
+
+---
+
+## Difficulty Assessment
+
+| Task | Difficulty | Reason |
+|------|-----------|--------|
+| Cat op definition (9-1) | Easy | Add op과 유사, variadic만 다름 |
+| Cat emitter (9-2) | Easy | 기존 패턴 따르면 됨 |
+| Cat lowering (9-3) | Medium | `tensor.insert_slice` 여러 번, offset 계산 |
+| Interpolate op definition (10-1) | Easy | 일반적인 TableGen |
+| Interpolate emitter (10-2) | Easy | 기존 패턴 따르면 됨 |
+| Interpolate lowering (10-3) | Hard | `linalg.generic` + index 연산 |
+| Full pipeline test (11) | Medium | 116 노드 전체 통과 확인 |
