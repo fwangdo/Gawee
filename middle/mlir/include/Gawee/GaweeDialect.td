@@ -75,8 +75,34 @@ def Gawee_Dialect : Dialect {
 // All Gawee ops inherit from this base class.
 // This ensures they all belong to the Gawee dialect.
 //
-
-
+// This is a TableGen "template class" for ops.
+//
+// Parameters:
+//   - `mnemonic`
+//       The operation name that appears after the dialect prefix in MLIR text.
+//       Example:
+//         Gawee_Op<"conv", ...>  ->  `gawee.conv`
+//         Gawee_Op<"relu", ...>  ->  `gawee.relu`
+//
+//   - `traits`
+//       A list of MLIR op properties / guarantees.
+//       Traits are metadata mixed into the generated C++ op class.
+//       They tell MLIR things like:
+//         * this op has one result
+//         * this op has no side effects
+//         * this op is elementwise
+//         * this op uses the same type for operands/results
+//       In this project many ops currently use `[]`, meaning "no extra traits declared yet".
+//
+// Role of `Gawee_Op`:
+//   - binds every op to `Gawee_Dialect`
+//   - avoids repeating `Op<Gawee_Dialect, ...>` for every op
+//   - gives one common place to add shared conventions later
+//
+// In short:
+//   `Gawee_Op<"conv", []>` means
+//   "define an op in the gawee dialect whose printed name is `gawee.conv`,
+//    with no additional traits declared."
 class Gawee_Op<string mnemonic, list<Trait> traits = []> :
     Op<Gawee_Dialect, mnemonic, traits>;
 

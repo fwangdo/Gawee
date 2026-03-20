@@ -204,6 +204,8 @@ bool MLIREmitter::emitNode(const llvm::json::Object &node,
     return emitFlatten(node, values);
   } else if (*opType == "MatMul") {
     return emitLinear(node, values);
+  } else if (*opType == "cat") {
+    return emitCat(node, values);
   } else {
     setError("Unsupported op type: " + *opType);
     return false;
@@ -673,6 +675,150 @@ bool MLIREmitter::emitLinear(const llvm::json::Object &node,
   valueMap[outputName->str()] = linearOp.getResult();
   return true;
 }
+
+//===----------------------------------------------------------------------===//
+// Concatenate emission  
+//===----------------------------------------------------------------------===//
+
+bool MLIREmitter::emitCat(const llvm::json::Object &node,
+                          const llvm::json::Object &values) {
+  auto loc = builder->getUnknownLoc();
+
+  // JSON node example:
+  // {
+  //   "op_type": "cat",
+  //   "inputs": ["x1", "x2", "x3"],
+  //   "outputs": ["cat_0"],
+  //   "attrs": { "dim": 1 }
+  // }
+  //
+  // This function does 4 things:
+  //   1. Read all input names from JSON
+  //   2. Convert each input name into an existing MLIR Value via valueMap
+  //   3. Read output metadata (shape) from JSON
+  //   4. Create one gawee.cat op with builder
+
+  // Step 1. Read all input names from JSON.
+  // `cat` is variadic, so inputs are not fixed to 2 tensors.
+  // We must read the full JSON array.
+  const auto *jsonInputs = node.getArray("inputs");
+  if (!jsonInputs || jsonInputs->empty()) {
+    setError("Cat: missing inputs");
+    return false;
+  }
+
+  // This will hold the actual MLIR SSA values corresponding to each input.
+  // Example:
+  //   JSON names ["x1", "x2"]  ->  MLIR values [%0, %1]
+  SmallVector<Value> inputValues;
+
+  // `reserve(n)` only pre-allocates memory capacity for `n` elements.
+  // It does NOT create n elements.
+  //
+  // Why use it?
+  //   We already know how many inputs there are from the JSON array size,
+  //   so we can avoid repeated internal re-allocation while pushing values.
+  //
+  // After reserve(3):
+  //   size()     == 0
+  //   capacity() >= 3
+  inputValues.reserve(jsonInputs->size());
+
+  // Step 2. Convert each JSON input name to the MLIR value that was already
+  // emitted earlier. This works because the graph is in topological order.
+  for (const auto &input : *jsonInputs) {
+    auto inputName = input.getAsString();
+    if (!inputName) {
+      setError("Cat: invalid input name");
+      return false;
+    }
+
+    Value inputValue = lookupValue(*inputName);
+    if (!inputValue) {
+      setError("Cat: input not found: " + *inputName);
+      return false;
+    }
+    inputValues.push_back(inputValue);
+  }
+
+  // Step 3. Read output metadata from JSON.
+  //
+  // `outputs` in JSON is just a list of names.
+  // Usually for current ops we only have one output, so we read outputs[0].
+  const auto *jsonOutputs = node.getArray("outputs");
+  if (!jsonOutputs || jsonOutputs->empty()) {
+    setError("Cat: missing outputs");
+    return false;
+  }
+  auto outputName = (*jsonOutputs)[0].getAsString();
+  if (!outputName) {
+    setError("Cat: invalid output name");
+    return false;
+  }
+  const auto *outputInfo = values.getObject(*outputName);
+  if (!outputInfo) {
+    setError("Cat: output not found in values: " + *outputName);
+    return false;
+  }
+
+  // `outputInfo` is still raw JSON metadata for the output value.
+  // It contains fields such as:
+  //   {
+  //     "id": "cat_0",
+  //     "shape": [1, 128, 64, 64],
+  //     "dtype": "float32"
+  //   }
+  //
+  // So:
+  //   - outputInfo = JSON object
+  //   - resultType = MLIR type created from outputInfo["shape"]
+  //
+  // In other words:
+  //   outputInfo : "data read from JSON"
+  //   resultType : "MLIR type object used to build the op"
+  auto resultType = parseShape(outputInfo->getArray("shape"));
+  if (!resultType) {
+    return false;
+  }
+
+  // Step 4. Read concat axis attribute.
+  //
+  // PyTorch usually uses `dim`.
+  // Some docs / other IRs may call it `axis`.
+  // Accept both to make the emitter more robust.
+  const auto *attrs = node.getObject("attrs");
+  if (!attrs) {
+    setError("Cat: missing attrs");
+    return false;
+  }
+
+  auto axis = attrs->getInteger("dim");
+  if (!axis) {
+    axis = attrs->getInteger("axis");
+  }
+  if (!axis) {
+    setError("Cat: missing axis/dim attribute");
+    return false;
+  }
+
+  // Step 5. Create one MLIR gawee.cat op.
+  //
+  // This is the main MLIR-specific line in this function:
+  //   builder creates the operation
+  //   inputValues are the variadic operands
+  //   axis is converted into an MLIR IntegerAttr
+  auto catOp = builder->create<CatOp>(
+      loc, resultType, inputValues, builder->getI64IntegerAttr(*axis));
+
+  // Step 6. Save the result into valueMap.
+  //
+  // `valueMap` connects JSON names to MLIR SSA values.
+  // Future nodes that use this cat result by name can retrieve it with
+  // lookupValue("cat_0").
+  valueMap[outputName->str()] = catOp.getResult();
+  return true;
+}
+
 
 //===----------------------------------------------------------------------===//
 // Helpers

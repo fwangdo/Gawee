@@ -89,4 +89,14 @@ def Gawee_LinearOp : Gawee_Op<"linear", []> {
   let results = (outs AnyTensor:$output);
 }
 
+def Gawee_CatOp : Gawee_Op<"cat", []> {
+  let summary = "cat operation";
+
+  let arguments = (ins
+    Variadic<AnyTensor>:$inputs,
+    I64Attr:$axis 
+  );
+  let results = (outs AnyTensor:$output); 
+}
+
 #endif

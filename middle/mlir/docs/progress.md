@@ -16,6 +16,71 @@ Existing ops already working: Conv (47), Relu (43), Add (16), MaxPool (1)
 
 ## Phase 9: gawee.cat — Tensor Concatenation
 
+### What is `cat`?
+
+`cat`은 **concatenate**의 줄임말이다. 여러 tensor를 **같은 축(axis) 기준으로 이어 붙여서** 하나의 더 큰 tensor를 만드는 연산이다.
+
+중요:
+- 원소끼리 더하는 연산이 아니다.
+- 새로운 값을 계산하는 연산이라기보다, **기존 tensor들을 특정 차원에서 연결하는 재배치 연산**에 가깝다.
+- 이어 붙이는 축을 제외한 나머지 차원 크기는 모두 같아야 한다.
+
+예시 1:
+```text
+a shape = [1, 32, 64, 64]
+b shape = [1, 32, 64, 64]
+cat([a, b], axis=1) = [1, 64, 64, 64]
+```
+
+설명:
+- `axis=1`은 channel 축이다.
+- batch, height, width는 그대로 유지된다.
+- channel만 32 + 32 = 64가 된다.
+
+예시 2:
+```text
+a shape = [2, 3]
+b shape = [2, 5]
+cat([a, b], axis=1) = [2, 8]
+```
+
+반대로 아래는 불가능하다:
+```text
+a shape = [1, 32, 64, 64]
+b shape = [1, 32, 32, 32]
+cat([a, b], axis=1)   // 불가
+```
+
+이유:
+- `axis=1`이 아닌 차원들(H, W)이 서로 다르기 때문이다.
+
+### Why UNet uses `cat`
+
+UNet은 downsampling 경로의 feature와 upsampling 경로의 feature를 **skip connection**으로 합친다.
+이때 둘을 더하는 것이 아니라 **channel 방향으로 붙이는 경우가 많다**.
+
+즉:
+```text
+encoder feature  [N, C1, H, W]
+decoder feature  [N, C2, H, W]
+cat(axis=1)
+=> [N, C1 + C2, H, W]
+```
+
+그 다음 convolution이 붙어서, 합쳐진 feature를 다시 섞어준다.
+
+### `cat` vs `add`
+
+`add`:
+- shape가 보통 동일해야 한다.
+- 같은 위치의 값을 더한다.
+- 결과 shape는 보통 입력 shape와 같다.
+
+`cat`:
+- 지정한 축을 제외하면 shape가 같아야 한다.
+- 값을 더하지 않고 이어 붙인다.
+- 결과 shape는 concat 축에서 더 커진다.
+
 ### 9-1. Op Definition (TableGen) ⬚
 
 | Task | Status | Files |

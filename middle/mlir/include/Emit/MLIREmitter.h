@@ -74,6 +74,8 @@ private:
   bool emitFlatten(const llvm::json::Object &node, const llvm::json::Object &values);
   bool emitLinear(const llvm::json::Object &node, const llvm::json::Object &values);
 
+  bool emitCat(const llvm::json::Object &node, const llvm::json::Object &values);
+
   /// Helper: Look up input Value by name
   Value lookupValue(llvm::StringRef name);
   
