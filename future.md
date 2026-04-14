@@ -2,6 +2,10 @@
 
 This project began as an AI compiler prototype focused on graph lowering and optimization, using a Python FX-based frontend and an MLIR-based middle-end.
 
+For a paper-oriented problem definition grounded in prior work, see:
+
+- `docs/research_direction.md`
+
 The long-term goal is to evolve it into a full-stack inference system that includes a lightweight runtime and a system-level execution engine.
 
 Upcoming development is centered on two main areas:
