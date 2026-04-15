@@ -50,6 +50,7 @@ compile_commands.json
 # Test outputs
 middle/mlir/test/*.tmp
 /test_output/
+/todo/progress.md
 
 # Benchmark model binaries
 benchmarks/**/*.onnx

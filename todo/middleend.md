@@ -159,6 +159,9 @@ unsupported op를 그 subset으로 lowering한다.
 - [ ] 각 lowering의 legality 조건 정리
 - [ ] tolerance / validation policy 문서화
 - [ ] skip reason schema 정의
+- [ ] ONNX rewrite 전후 실제 런타임 latency 비교를 필수 평가 항목으로 추가
+- [ ] unsupported op 제거가 끝난 모델에 대해 ORT 기준 before/after 속도 측정
+- [ ] unsupported op before/after뿐 아니라 runtime before/after 표까지 함께 남기기
 
 ---
 
@@ -209,6 +212,9 @@ verifier는 그 핵심이다.
 - [ ] pass 실행 전/후 verifier hook 추가
 - [ ] 실패 시 human-readable report 작성
 - [ ] regression test 최소 3개 추가
+- [ ] pass 후 실제 런타임까지 돌려 semantic drift와 crash 여부를 함께 확인
+- [ ] 원본 vs 최적화 결과의 오차 허용 범위를 수치로 고정
+- [ ] correctness와 speedup을 같이 보는 regression harness 정의
 
 ---
 

@@ -10,6 +10,7 @@ Gawee의 graph/IR/optimizer narrative 안으로 흡수하는 것이다.
 이 프로젝트는 아래 조건을 모두 만족해야 완료로 본다.
 
 - 공개 NLP 모델 5개와 vision 모델 2개가 준비되어 있다.
+- dynamic shape를 실제로 쓰는 모델 2개에 대해 `torch -> ONNX` 변환이 재현 가능하다.
 - NLP 5개는 최종적으로 supported primitive op set 안으로 내려간다.
 - lowering 전후 correctness 비교가 된다.
 - rewrite 전후 latency 비교가 된다.
@@ -88,6 +89,10 @@ Constant와 initializer는 계산 op로 세지 않는다.
 
 - [ ] NLP 5개 모델의 원본 출처와 export 경로 정리
 - [ ] vision 2개 모델의 원본 출처 정리
+- [ ] dynamic shape를 실제로 사용하는 모델 2개 선정
+- [ ] 각 모델에서 dynamic axis를 어디까지 열어둘지 정책 확정
+- [ ] `torch.export` / `torch.onnx.export` 중 어떤 경로가 더 안정적인지 비교
+- [ ] 현실적인 export 실패 원인(shape constraint, control flow, unsupported op, external data) 기록
 - [ ] 모델 파일 저장 위치 규칙 정하기
 - [ ] 모델명과 파일명 naming convention 정하기
 
@@ -118,6 +123,8 @@ Constant와 initializer는 계산 op로 세지 않는다.
 
 - [ ] NLP 5개 baseline 한 번씩 실행
 - [ ] vision 2개 baseline 한 번씩 실행
+- [ ] dynamic shape 모델 2개를 길이/배치 변화 케이스로 실제 export
+- [ ] export된 dynamic model이 서로 다른 입력 shape에서 ORT로 로드/실행되는지 확인
 - [ ] M1에서 모두 실제로 돈다는 것 확인
 - [ ] baseline 실패 모델이 있으면 export 정책 수정
 
@@ -143,6 +150,7 @@ Constant와 initializer는 계산 op로 세지 않는다.
 - [ ] 5개 NLP 모델 각각에서 unsupported op가 무엇인지 표로 확정
 - [ ] unsupported op가 현재 rewrite 계획으로 커버되는지 체크
 - [ ] 커버되지 않는 op가 있으면 export 방식 또는 supported set 재조정
+- [ ] dynamic shape export에서 생긴 unsupported / brittle 패턴이 rewrite scope에 들어오는지 확인
 
 ## Phase 3. Validation Infrastructure
 
@@ -183,6 +191,24 @@ Constant와 initializer는 계산 op로 세지 않는다.
 - [ ] pass family별 gate 통과 여부 표시
 - [ ] 실패 시 어떤 output에서 왜 실패했는지 남기기
 - [ ] ``rewrite correctness''와 ``task accuracy''를 혼동하지 않는 문구를 README/report에 유지
+- [ ] dynamic shape 입력 2~3종에 대해 correctness가 유지되는지 별도 표로 기록
+
+## Phase 3.5. Dynamic Shape Export Challenges
+
+### A. realistic export track
+
+- [ ] dynamic shape 모델 2개를 선택해 `torch -> ONNX` export 재현
+- [ ] batch 또는 sequence length가 달라질 때 같은 ONNX graph가 유지되는지 확인
+- [ ] export 시 생기는 shape constraint warning을 수집
+- [ ] exporter가 생성한 불필요한 shape op / guard / fallback 패턴을 기록
+- [ ] 현실적인 failure case 1개 이상을 문서화하고 우회책을 정리
+
+### B. acceptance criteria
+
+- [ ] 모델별 export command를 README에 남기기
+- [ ] 모델별 dynamic axes 정책을 표로 남기기
+- [ ] 서로 다른 입력 shape 3종 이상에서 ORT 실행 성공 확인
+- [ ] static export 대비 graph가 얼마나 복잡해졌는지 비교
 
 ## Phase 4. Core Graph Utilities
 
