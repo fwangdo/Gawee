@@ -10,11 +10,11 @@
 
 ## Priority
 
-현재 가장 우선적인 목표는 `resnet18`이다.
+현재 가장 우선적인 목표는 `resnet18`과 `bert_tiny`의 rewrite completion이다.
 
 이 모델에서 먼저 아래를 끝내야 한다.
 
-[ ] rewrite pass가 실제로 graph를 바꾸도록 완성
+[x] rewrite pass가 실제로 graph를 바꾸도록 완성
 [ ] rewritten model이 ORT에서 실행 가능
 [ ] correctness check 통과
 [ ] latency 비교 report 생성
@@ -27,14 +27,14 @@
 
 ### Phase 1: CNN first
 
-[ ] `Gemm -> Conv` 또는 `Gemm -> MatMul + bias` 정리
+[x] `Gemm -> Conv` 또는 `Gemm -> MatMul + bias` 정리
 
 `resnet18` 기준으로는 `Gemm`가 핵심 blocker다.
 
 ### Phase 2: Transformer core
 
-[ ] `MatMul -> Conv` 또는 supported op 조합
-[ ] `Gather` rewrite 또는 support 전략 재판단
+[x] `MatMul -> Conv` 또는 supported op 조합
+[x] `Gather` rewrite 또는 support 전략 재판단
 [x] `Slice`는 supported op로 유지
 [ ] `Pow` rewrite 또는 support 전략 재판단
 
@@ -46,16 +46,45 @@
 [ ] `Not` rewrite
 [ ] `CumSum` rewrite 또는 support 전략 재판단
 
-## ConvertMatmul Completion
+## RewriteMatmul Completion
 
-`passes/convert_matmul.py`에서 남아 있는 일:
+`passes/rewrite_matmul.py`에서 남아 있는 일:
 
-[ ] generated nodes를 실제 graph에 삽입
-[ ] 기존 `MatMul` node 제거
+[x] generated nodes를 실제 graph에 삽입
+[x] 기존 `MatMul` node 제거
 [ ] initializer / shape update 정리
 [ ] 2D / 3D / 4D 경로별 ORT 실행 검증
 [ ] dynamic path correctness 검증
-[ ] 실패 케이스를 `log`에 남기고 pass 전체는 계속 진행
+[x] 실패 케이스를 `log`에 남기고 pass 전체는 계속 진행
+
+## Current ONNX Understanding Notes
+
+현재 이해 수준은 "ONNX graph를 value-name 기반 DAG로 읽는 감각은 잡혀가고 있으나, op별 broadcasting / shape propagation / initializer와 runtime tensor의 구분은 계속 명시적 설명이 필요한 단계"로 본다.
+
+특히 아래는 이해가 빠르게 개선된 지점이다.
+
+[x] `graph.input`과 `initializer`가 둘 다 node input으로 참조 가능한 tensor value라는 점 이해
+[x] node name과 tensor output name은 별도 namespace에 가깝고, 이름을 분리해야 디버깅이 쉬워진다는 점 이해
+[x] `Unsqueeze`의 axes 입력은 스칼라가 아니라 int64 tensor/list 형태라는 점 이해
+[x] `Gather(data, indices)`에서 `indices`는 보통 token 하나가 아니라 `[B, S]` 같은 sequence tensor일 수 있다는 점 이해
+[x] `Equal(indices, scalar_vocab_id)`는 scalar를 indices shape로 broadcast해서 mask를 만든다는 점 이해
+[x] `Unsqueeze(-1)`는 mask를 embedding row와 곱하기 위한 broadcast 축을 추가한다는 점 이해
+[x] chunked gather는 `[B, S, C, H]` 중간 표현을 만들고 chunk axis를 줄여 `[B, S, H]`로 복원한다는 점 이해
+[x] `ReduceMean * C`보다 `ReduceSum`이 직접적이고 현재 supported op set에 더 맞는 방식이라는 점 이해
+[x] dynamic-data Gather는 `one-hot-like mask -> MatMul -> Reshape`로 표현할 수 있고, 뒤에서 `RewriteMatmul`이 다시 lowering할 수 있다는 점 이해
+
+앞으로 설명할 때는 아래 관점으로 설명하는 것이 좋다.
+
+[ ] ONNX node 설명은 항상 `input tensor names -> output tensor names`로 먼저 풀기
+[ ] 각 rewrite는 중간 tensor shape를 단계별로 써서 설명하기
+[ ] broadcasting이 일어나는 정확한 op와 shape pair를 반드시 명시하기
+[ ] initializer 기반 static rewrite와 runtime tensor 기반 dynamic rewrite를 매번 구분하기
+[ ] `axis`가 의미하는 차원을 concrete example로 먼저 고정하고 일반화하기
+[ ] `Shape`, `Gather`, `Slice`, `Reshape` 같은 shape-manipulation op는 값 계산과 shape 계산을 분리해 설명하기
+[ ] `MatMul -> Conv` lowering은 layout 변환과 수학적 동치성을 따로 설명하기
+[ ] pass 순서가 왜 중요한지, 특히 `Gather -> MatMul -> RewriteMatmul` 같은 chained rewrite는 pipeline 관점으로 설명하기
+[ ] supported op에 넣는 결정과 rewrite로 제거하는 결정의 차이를 "현실성 / graph blow-up / 구현 난이도" 축으로 설명하기
+[ ] 검증 설명은 먼저 structural check, 그다음 ORT execution, 마지막 correctness metric 순서로 설명하기
 
 ## Validation / Eval
 

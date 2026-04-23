@@ -141,6 +141,11 @@ class RewriteGather(Folder):
         Returns:
             True if this path handled the node, otherwise False.
         """
+        # This path is intentionally narrow:
+        # - Gather index must be compile-time known and scalar-like.
+        # - Once we know the exact selected position, Gather becomes equivalent to
+        #   a plain Slice on the selected axis followed by a Reshape that removes
+        #   the gathered axis, which is exactly ONNX Gather semantics for scalar indices.
         if context.index_array is None or context.index_array.size != 1:
             return False
 
@@ -317,6 +322,12 @@ class RewriteGather(Folder):
         """
         nodes: list[onnx.NodeProto] = []
 
+        # Gather(..., scalar_index, axis=A) means:
+        # 1. keep only the A-th slice at position `scalar_index`
+        # 2. drop the gathered axis from the final shape
+        #
+        # Slice does step 1. It preserves rank, so if the input is [B, S, H] and
+        # axis=1, the intermediate result becomes [B, 1, H].
         starts_name = self.tensor_name(context.prefix, "slice_starts")
         ends_name = self.tensor_name(context.prefix, "slice_ends")
         axes_name = self.tensor_name(context.prefix, "slice_axes")
@@ -334,6 +345,11 @@ class RewriteGather(Folder):
             )
         )
 
+        # Gather with a scalar index removes the indexed axis.
+        # Reshape uses the inferred Gather output shape to do exactly that rank drop.
+        # Example:
+        #   Slice result  : [B, 1, H]
+        #   Gather output : [B, H]
         reshape_shape_name = self.tensor_name(context.prefix, "reshape_shape")
         reshape_shape = [dim if isinstance(dim, int) and dim > 0 else 0 for dim in output_shape]
         self.add_init(graph, reshape_shape_name, np.array(reshape_shape, dtype=np.int64))
@@ -369,9 +385,16 @@ class RewriteGather(Folder):
         """
         nodes: list[onnx.NodeProto] = []
 
+        # Step 0. Materialize the explicit vocabulary ids [0, 1, ..., V-1].
+        # These ids become the "columns" of a one-hot-like mask built from indices.
         range_name = self.tensor_name(context.prefix, "dynamic_range")
         self.add_init(graph, range_name, np.arange(vocab_size, dtype=np.int64))
 
+        # Step 1. Unsqueeze indices on the last axis so they can be compared against
+        # the full vocabulary range in one broadcasted Equal.
+        #
+        # If indices has shape [B, S], this produces [B, S, 1].
+        # If indices has shape [], this produces [1].
         index_unsqueeze_axes_name = self.tensor_name(context.prefix, "dynamic_index_unsqueeze_axes")
         self.add_init(graph, index_unsqueeze_axes_name, np.array([index_rank], dtype=np.int64))
         index_expanded_name = self.tensor_name(context.prefix, "dynamic_index_expanded")
@@ -384,6 +407,16 @@ class RewriteGather(Folder):
             )
         )
 
+        # Step 2. Compare each index with every vocabulary id.
+        #
+        # Broadcast pattern:
+        #   indices_expanded : [..., 1]
+        #   range           : [V]
+        #   Equal result    : [..., V]
+        #
+        # This is the core "one-hot-like" mask:
+        # each index position now owns a length-V boolean vector telling us which
+        # vocabulary row should be selected.
         equality_name = self.tensor_name(context.prefix, "dynamic_equal")
         nodes.append(
             helper.make_node(
@@ -394,6 +427,8 @@ class RewriteGather(Folder):
             )
         )
 
+        # Step 3. Convert bool mask to numeric mask so it can participate in MatMul.
+        # Shape stays [..., V].
         float_mask_name = self.tensor_name(context.prefix, "dynamic_mask")
         nodes.append(
             helper.make_node(
@@ -405,6 +440,15 @@ class RewriteGather(Folder):
             )
         )
 
+        # Step 4. Collapse every non-vocabulary dimension into a batch-like leading
+        # dimension so the mask becomes a standard 2D matrix.
+        #
+        # Example:
+        #   original mask : [B, S, V]
+        #   flattened     : [B*S, V]
+        #
+        # This lets us express Gather as:
+        #   one_hot(indices) @ data
         flattened_mask_shape_name = self.tensor_name(context.prefix, "dynamic_mask_flatten_shape")
         self.add_init(graph, flattened_mask_shape_name, np.array([-1, vocab_size], dtype=np.int64))
         flattened_mask_name = self.tensor_name(context.prefix, "dynamic_mask_flattened")
@@ -417,6 +461,15 @@ class RewriteGather(Folder):
             )
         )
 
+        # Step 5. Flatten the Gather data the same way: [V, suffix...] -> [V, suffix_product].
+        #
+        # MatMul needs a 2D RHS:
+        #   mask_2d : [flat_index_count, V]
+        #   data_2d : [V, flat_feature_count]
+        #   result  : [flat_index_count, flat_feature_count]
+        #
+        # For scalar Shape-gathers the suffix product is 1.
+        # For embedding-like data [V, H], this becomes [V, H].
         flattened_data_shape_name = self.tensor_name(context.prefix, "dynamic_data_flatten_shape")
         self.add_init(graph, flattened_data_shape_name, np.array([vocab_size, -1], dtype=np.int64))
         flattened_data_name = self.tensor_name(context.prefix, "dynamic_data_flattened")
@@ -429,6 +482,11 @@ class RewriteGather(Folder):
             )
         )
 
+        # Step 6. Replace Gather with MatMul.
+        #
+        # Since each row of `flattened_mask_name` is effectively one-hot, this MatMul
+        # selects the correct row from `flattened_data_name`.
+        # We deliberately leave the MatMul here and let RewriteMatmul lower it later.
         matmul_output_name = self.tensor_name(context.prefix, "dynamic_matmul")
         nodes.append(
             helper.make_node(
@@ -439,6 +497,14 @@ class RewriteGather(Folder):
             )
         )
 
+        # Step 7. Recover the original Gather output shape.
+        #
+        # We first read the runtime shape of `indices`, because every Gather result
+        # starts with the original indices shape.
+        # Example:
+        #   indices     : [B, S]
+        #   Gather data : [V, H]
+        #   output      : [B, S, H]
         index_shape_name = self.tensor_name(context.prefix, "dynamic_index_shape")
         nodes.append(
             helper.make_node(
@@ -451,6 +517,11 @@ class RewriteGather(Folder):
 
         output_shape_name = index_shape_name
         if suffix_shape:
+            # If data has trailing feature dimensions, append them after the index shape.
+            # Example:
+            #   index shape  : [B, S]
+            #   suffix shape : [H]
+            #   final shape  : [B, S, H]
             suffix_shape_name = self.tensor_name(context.prefix, "dynamic_suffix_shape")
             self.add_init(graph, suffix_shape_name, np.array(suffix_shape, dtype=np.int64))
             output_shape_name = self.tensor_name(context.prefix, "dynamic_output_shape")
@@ -464,6 +535,10 @@ class RewriteGather(Folder):
                 )
             )
 
+        # Step 8. Reshape the flattened MatMul result back into Gather output layout.
+        # At this point semantics are preserved:
+        #   Gather(data, indices, axis=0)
+        # == Reshape(MatMul(one_hot(indices), flatten(data)), gather_output_shape)
         nodes.append(
             helper.make_node(
                 cons.OP_RESHAPE,

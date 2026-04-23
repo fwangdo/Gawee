@@ -26,6 +26,7 @@ class Folder:
         self.init_map: Dict[str, np.ndarray] = {}
         self.shape_info: Dict[str, List] = {}
         self.nodes_to_remove: List[onnx.NodeProto] = []
+        return 
 
     def prepare(self, model: onnx.ModelProto) -> None:
         """Initialize model-specific state for one pass execution."""
