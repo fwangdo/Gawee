@@ -30,6 +30,7 @@ class ConstantFolding(Folder):
                 return np.array(list(attr.ints), dtype=np.int64)
         return None
 
+
     def _rewrite_constant(self, node: onnx.NodeProto) -> None:
         output_name = node.output[0]
         value = self._get_constant_value(node)
@@ -38,6 +39,29 @@ class ConstantFolding(Folder):
             self.init_map[output_name] = value
             self.nodes_to_remove.append(node)
             self.log.append(f" - Constant({node.name}) is folded into initializer")
+        return 
+
+    
+    def _rewrite_cons_shape(self, node: onnx.NodeProto) -> None:
+        shape_input = node.input[0]
+        if shape_input in self.init_map:
+            shape = self.init_map[shape_input].astype(np.int64)
+
+            # default value. 
+            fill_value = 0.0
+            fill_dtype = np.float32
+            for attr in node.attribute:
+                if attr.name == 'value':
+                    t = numpy_helper.to_array(attr.t)
+                    fill_value = t.item()
+                    fill_dtype = t.dtype
+
+            output_array = np.full(shape, fill_value, dtype=fill_dtype)
+            output_name = node.output[0]
+            self.add_init(self.graph, output_name, output_array)
+            self.init_map[output_name] = output_array
+            self.nodes_to_remove.append(node)
+            self.log.append(f" - ConstantOfShape({node.name}) is folded into initializer")
         return 
 
 
@@ -49,22 +73,7 @@ class ConstantFolding(Folder):
             if node.op_type == cons.OP_CONSTANT:
                 self._rewrite_constant(node)
             elif node.op_type == cons.OP_CONSTANT_OF_SHAPE:
-                shape_input = node.input[0]
-                if shape_input in init_map:
-                    shape = init_map[shape_input].astype(np.int64)
-                    fill_value = 0.0
-                    fill_dtype = np.float32
-                    for attr in node.attribute:
-                        if attr.name == 'value':
-                            t = numpy_helper.to_array(attr.t)
-                            fill_value = t.item()
-                            fill_dtype = t.dtype
-                    output_array = np.full(shape, fill_value, dtype=fill_dtype)
-                    output_name = node.output[0]
-                    cls.add_init(graph, output_name, output_array)
-                    init_map[output_name] = output_array
-                    nodes_to_remove.append(node)
-                    log.append(f" - ConstantOfShape({node.name}) is folded into initializer")
+                self._rewrite_cons_shape(node)
 
         self.remove_marked_nodes()
 
