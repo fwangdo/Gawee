@@ -21,7 +21,7 @@ frontend 작업 문맥으로 복사해 둔 것이다.
 이 프로젝트의 목표 supported op set은 아래다.
 
 - arithmetic: `Add`, `Sub`, `Mul`, `Div`, `Min`, `Max`
-- tensor / layout: `Cast`, `Concat`, `Expand`, `Reshape`, `Shape`, `Squeeze`, `Transpose`, `Unsqueeze`
+- tensor / layout: `Cast`, `Concat`, `Expand`, `Reshape`, `Shape`, `Slice`, `Squeeze`, `Transpose`, `Unsqueeze`
 - reduction / normalization: `ReduceMean`, `ReduceSum`, `Softmax(last-axis only)`, `Sqrt`
 - activation: `Erf`, `GELU`, `HardSigmoid`, `HardSwish`, `LeakyRelu`, `Relu`, `Sigmoid`, `Tanh`
 - comparison / selection: `Equal`, `Where`

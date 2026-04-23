@@ -35,7 +35,7 @@
 
 [ ] `MatMul -> Conv` 또는 supported op 조합
 [ ] `Gather` rewrite 또는 support 전략 재판단
-[ ] `Slice` rewrite 또는 support 전략 재판단
+[x] `Slice`는 supported op로 유지
 [ ] `Pow` rewrite 또는 support 전략 재판단
 
 ### Phase 3: Secondary cleanup

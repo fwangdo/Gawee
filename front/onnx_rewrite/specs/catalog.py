@@ -31,6 +31,7 @@ SUPPORTED_OPS: frozenset[str] = frozenset(
         "ReduceSum",
         "Shape",
         "Sigmoid",
+        "Slice",
         "Softmax",
         "Sqrt",
         "Tanh",
