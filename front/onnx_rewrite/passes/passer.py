@@ -3,6 +3,7 @@ from __future__ import annotations
 import onnx
 
 from .cleanup import Cleanup
+from .rewrite_gather import RewriteGather
 from .rewrite_gemm import RewriteGemm
 from .rewrite_matmul import RewriteMatmul
 
@@ -11,7 +12,7 @@ class Passer:
     """Run the frontend rewrite pipeline in a fixed order."""
 
     def __init__(self) -> None:
-        self.passes = [RewriteGemm(), RewriteMatmul(), Cleanup()]
+        self.passes = [RewriteGather(), RewriteGemm(), RewriteMatmul(), Cleanup()]
 
     def optimize(self, model: onnx.ModelProto) -> tuple[onnx.ModelProto, list[str]]:
         all_logs: list[str] = []

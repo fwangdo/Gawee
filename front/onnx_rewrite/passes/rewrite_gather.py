@@ -125,6 +125,105 @@ class RewriteGather(Folder):
         )
         return True
 
+    def _rewrite_scalar_index_gather(
+        self,
+        node: onnx.NodeProto,
+        context: GatherNodeContext,
+        graph: onnx.GraphProto,
+    ) -> bool:
+        """Rewrite scalar-index Gather into Slice + Reshape.
+
+        Args:
+            node: Gather node to rewrite.
+            context: Cached metadata for the node.
+            graph: Graph being rewritten.
+
+        Returns:
+            True if this path handled the node, otherwise False.
+        """
+        if context.index_array is None or context.index_array.size != 1:
+            return False
+
+        output_shape = self.shape_info.get(context.output_name)
+        if output_shape is None:
+            self.log.append(
+                f" - Gather({context.prefix}) kept as Gather (output shape unknown for scalar-index path)"
+            )
+            return True
+
+        scalar_index = int(context.index_array.reshape(-1)[0])
+        new_nodes = self._emit_scalar_index_slice_chain(
+            context=context,
+            graph=graph,
+            scalar_index=scalar_index,
+            output_shape=output_shape,
+        )
+        self.replace_node(node, new_nodes)
+        self.log.append(
+            f" - Gather({context.prefix}) is rewritten as Slice+Reshape (axis={context.axis}, index={scalar_index})"
+        )
+        return True
+
+    def _rewrite_dynamic_axis0_gather(
+        self,
+        node: onnx.NodeProto,
+        context: GatherNodeContext,
+        graph: onnx.GraphProto,
+    ) -> bool:
+        """Rewrite axis-0 Gather with dynamic data into mask + MatMul.
+
+        Args:
+            node: Gather node to rewrite.
+            context: Cached metadata for the node.
+            graph: Graph being rewritten.
+
+        Returns:
+            True if the dynamic-data path handled the node, otherwise False.
+        """
+        if context.data_array is not None or context.axis != 0:
+            return False
+
+        data_shape = self.shape_info.get(context.data_name)
+        index_shape = self.shape_info.get(context.index_name)
+        index_rank: int | None = None
+        if index_shape is not None:
+            index_rank = len(index_shape)
+        elif context.index_array is not None:
+            index_rank = context.index_array.ndim
+
+        if not data_shape or index_rank is None:
+            return False
+
+        vocab_size = data_shape[0]
+        if not isinstance(vocab_size, int) or vocab_size <= 0:
+            self.log.append(
+                f" - Gather({context.prefix}) kept as Gather (dynamic axis-0 size unknown)"
+            )
+            return True
+
+        # Generic suffix reshaping needs either a scalar/value gather or a fully
+        # known suffix shape. The current dynamic Gather users in bert_tiny are
+        # scalar Shape-gathers, which satisfy this requirement.
+        suffix_shape = data_shape[1:]
+        if any(not isinstance(dim, int) or dim <= 0 for dim in suffix_shape):
+            self.log.append(
+                f" - Gather({context.prefix}) kept as Gather (dynamic suffix shape unknown)"
+            )
+            return True
+
+        new_nodes = self._emit_dynamic_axis0_matmul_chain(
+            context=context,
+            graph=graph,
+            vocab_size=vocab_size,
+            index_rank=index_rank,
+            suffix_shape=suffix_shape,
+        )
+        self.replace_node(node, new_nodes)
+        self.log.append(
+            f" - Gather({context.prefix}) is rewritten as dynamic Equal+MatMul (V={vocab_size})"
+        )
+        return True
+
     def _emit_small_vocab_chain(
         self,
         context: GatherNodeContext,
@@ -196,6 +295,183 @@ class RewriteGather(Folder):
                 )
             )
 
+        return nodes
+
+    def _emit_scalar_index_slice_chain(
+        self,
+        context: GatherNodeContext,
+        graph: onnx.GraphProto,
+        scalar_index: int,
+        output_shape: list[int | str],
+    ) -> list[onnx.NodeProto]:
+        """Build Slice + Reshape nodes for scalar-index Gather.
+
+        Args:
+            context: Cached metadata for the source Gather node.
+            graph: Graph that receives generated initializers.
+            scalar_index: Selected index value.
+            output_shape: Inferred output shape after Gather.
+
+        Returns:
+            Replacement nodes implementing scalar-index Gather.
+        """
+        nodes: list[onnx.NodeProto] = []
+
+        starts_name = self.tensor_name(context.prefix, "slice_starts")
+        ends_name = self.tensor_name(context.prefix, "slice_ends")
+        axes_name = self.tensor_name(context.prefix, "slice_axes")
+        self.add_init(graph, starts_name, np.array([scalar_index], dtype=np.int64))
+        self.add_init(graph, ends_name, np.array([scalar_index + 1], dtype=np.int64))
+        self.add_init(graph, axes_name, np.array([context.axis], dtype=np.int64))
+
+        slice_output_name = self.tensor_name(context.prefix, "slice_output")
+        nodes.append(
+            helper.make_node(
+                cons.OP_SLICE,
+                [context.data_name, starts_name, ends_name, axes_name],
+                [slice_output_name],
+                name=self.node_name(context.prefix, "slice"),
+            )
+        )
+
+        reshape_shape_name = self.tensor_name(context.prefix, "reshape_shape")
+        reshape_shape = [dim if isinstance(dim, int) and dim > 0 else 0 for dim in output_shape]
+        self.add_init(graph, reshape_shape_name, np.array(reshape_shape, dtype=np.int64))
+        nodes.append(
+            helper.make_node(
+                cons.OP_RESHAPE,
+                [slice_output_name, reshape_shape_name],
+                [context.output_name],
+                name=self.node_name(context.prefix, "reshape"),
+            )
+        )
+        return nodes
+
+    def _emit_dynamic_axis0_matmul_chain(
+        self,
+        context: GatherNodeContext,
+        graph: onnx.GraphProto,
+        vocab_size: int,
+        index_rank: int,
+        suffix_shape: list[int],
+    ) -> list[onnx.NodeProto]:
+        """Build `Gather(data, indices, axis=0)` as mask creation followed by MatMul.
+
+        Args:
+            context: Cached metadata for the source Gather node.
+            graph: Graph that receives generated initializers.
+            vocab_size: Static size of the axis-0 vocabulary dimension.
+            index_rank: Rank of the Gather indices tensor.
+            suffix_shape: Static suffix shape of the data tensor after axis 0.
+
+        Returns:
+            Replacement nodes implementing the dynamic-data Gather rewrite.
+        """
+        nodes: list[onnx.NodeProto] = []
+
+        range_name = self.tensor_name(context.prefix, "dynamic_range")
+        self.add_init(graph, range_name, np.arange(vocab_size, dtype=np.int64))
+
+        index_unsqueeze_axes_name = self.tensor_name(context.prefix, "dynamic_index_unsqueeze_axes")
+        self.add_init(graph, index_unsqueeze_axes_name, np.array([index_rank], dtype=np.int64))
+        index_expanded_name = self.tensor_name(context.prefix, "dynamic_index_expanded")
+        nodes.append(
+            helper.make_node(
+                cons.OP_UNSQUEEZE,
+                [context.index_name, index_unsqueeze_axes_name],
+                [index_expanded_name],
+                name=self.node_name(context.prefix, "dynamic_index_unsqueeze"),
+            )
+        )
+
+        equality_name = self.tensor_name(context.prefix, "dynamic_equal")
+        nodes.append(
+            helper.make_node(
+                cons.OP_EQUAL,
+                [index_expanded_name, range_name],
+                [equality_name],
+                name=self.node_name(context.prefix, "dynamic_equal"),
+            )
+        )
+
+        float_mask_name = self.tensor_name(context.prefix, "dynamic_mask")
+        nodes.append(
+            helper.make_node(
+                cons.OP_CAST,
+                [equality_name],
+                [float_mask_name],
+                name=self.node_name(context.prefix, "dynamic_cast"),
+                to=TensorProto.FLOAT,
+            )
+        )
+
+        flattened_mask_shape_name = self.tensor_name(context.prefix, "dynamic_mask_flatten_shape")
+        self.add_init(graph, flattened_mask_shape_name, np.array([-1, vocab_size], dtype=np.int64))
+        flattened_mask_name = self.tensor_name(context.prefix, "dynamic_mask_flattened")
+        nodes.append(
+            helper.make_node(
+                cons.OP_RESHAPE,
+                [float_mask_name, flattened_mask_shape_name],
+                [flattened_mask_name],
+                name=self.node_name(context.prefix, "dynamic_mask_flatten"),
+            )
+        )
+
+        flattened_data_shape_name = self.tensor_name(context.prefix, "dynamic_data_flatten_shape")
+        self.add_init(graph, flattened_data_shape_name, np.array([vocab_size, -1], dtype=np.int64))
+        flattened_data_name = self.tensor_name(context.prefix, "dynamic_data_flattened")
+        nodes.append(
+            helper.make_node(
+                cons.OP_RESHAPE,
+                [context.data_name, flattened_data_shape_name],
+                [flattened_data_name],
+                name=self.node_name(context.prefix, "dynamic_data_flatten"),
+            )
+        )
+
+        matmul_output_name = self.tensor_name(context.prefix, "dynamic_matmul")
+        nodes.append(
+            helper.make_node(
+                cons.OP_MATMUL,
+                [flattened_mask_name, flattened_data_name],
+                [matmul_output_name],
+                name=self.node_name(context.prefix, "dynamic_matmul"),
+            )
+        )
+
+        index_shape_name = self.tensor_name(context.prefix, "dynamic_index_shape")
+        nodes.append(
+            helper.make_node(
+                cons.OP_SHAPE,
+                [context.index_name],
+                [index_shape_name],
+                name=self.node_name(context.prefix, "dynamic_index_shape"),
+            )
+        )
+
+        output_shape_name = index_shape_name
+        if suffix_shape:
+            suffix_shape_name = self.tensor_name(context.prefix, "dynamic_suffix_shape")
+            self.add_init(graph, suffix_shape_name, np.array(suffix_shape, dtype=np.int64))
+            output_shape_name = self.tensor_name(context.prefix, "dynamic_output_shape")
+            nodes.append(
+                helper.make_node(
+                    cons.OP_CONCAT,
+                    [index_shape_name, suffix_shape_name],
+                    [output_shape_name],
+                    name=self.node_name(context.prefix, "dynamic_output_shape"),
+                    axis=0,
+                )
+            )
+
+        nodes.append(
+            helper.make_node(
+                cons.OP_RESHAPE,
+                [matmul_output_name, output_shape_name],
+                [context.output_name],
+                name=self.node_name(context.prefix, "dynamic_output_reshape"),
+            )
+        )
         return nodes
 
     def _emit_chunked_vocab_chain(
@@ -415,13 +691,14 @@ class RewriteGather(Folder):
         )
 
         reduced_chunk_name = self.tensor_name(context.prefix, f"chunk_reduced_{chunk_index}")
+        reduce_axes_name = self.tensor_name(context.prefix, f"chunk_reduce_axes_{chunk_index}")
+        self.add_init(graph, reduce_axes_name, np.array([-2], dtype=np.int64))
         nodes.append(
             helper.make_node(
                 cons.OP_REDUCE_SUM,
-                [weighted_chunk_name],
+                [weighted_chunk_name, reduce_axes_name],
                 [reduced_chunk_name],
                 name=self.node_name(context.prefix, f"chunk_reduce_sum_{chunk_index}"),
-                axes=[-2],
                 keepdims=0,
             )
         )
@@ -487,6 +764,10 @@ class RewriteGather(Folder):
         context = self._build_context(node)
 
         if self._rewrite_static_gather(node, context, graph):
+            return
+        if self._rewrite_scalar_index_gather(node, context, graph):
+            return
+        if self._rewrite_dynamic_axis0_gather(node, context, graph):
             return
         if self._rewrite_vocab_gather(node, context, graph):
             return
