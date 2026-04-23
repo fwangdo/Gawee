@@ -26,7 +26,10 @@ class Folder:
         self.init_map: Dict[str, np.ndarray] = {}
         self.shape_info: Dict[str, List] = {}
         self.nodes_to_remove: List[onnx.NodeProto] = []
-        return 
+
+        # Tensor-name based graph indexes populated by `prepare()`.
+        self.producer_by_output: Dict[str, onnx.NodeProto] = {}
+        self.consumers_by_input: Dict[str, List[onnx.NodeProto]] = {}
 
     def prepare(self, model: onnx.ModelProto) -> None:
         """Initialize model-specific state for one pass execution."""
@@ -36,14 +39,18 @@ class Folder:
         self.init_map = self.get_init_map(model.graph)
         self.shape_info = self._get_shape_info(model)
         self.nodes_to_remove = []
+        self._parse_relation()
+
 
     def require_graph(self) -> onnx.GraphProto:
         """Return the prepared graph or fail fast when `prepare()` was skipped."""
         return self.graph
 
+
     def require_model(self) -> onnx.ModelProto:
         """Return the prepared model or fail fast when `prepare()` was skipped."""
         return self.model
+
 
     def append_nodes(self, nodes: Iterable[onnx.NodeProto]) -> None:
         """Append generated nodes to the prepared graph in order."""
@@ -51,14 +58,17 @@ class Folder:
         for node in nodes:
             graph.node.append(node)
 
+
     def mark_for_removal(self, node: onnx.NodeProto) -> None:
         """Register a node for deletion after pass processing completes."""
         self.nodes_to_remove.append(node)
+
 
     def replace_node(self, node: onnx.NodeProto, new_nodes: Iterable[onnx.NodeProto]) -> None:
         """Replace one existing node with a sequence of generated nodes."""
         self.mark_for_removal(node)
         self.append_nodes(new_nodes)
+
 
     def remove_marked_nodes(self) -> None:
         """Remove nodes previously registered via `mark_for_removal()`."""
@@ -66,6 +76,49 @@ class Folder:
         for node in self.nodes_to_remove:
             graph.node.remove(node)
             self.deleted_node += 1
+
+
+    def _parse_relation(self) -> None:
+        """Build tensor-name indexes for producer and consumer lookup."""
+        self.producer_by_output = {}
+        self.consumers_by_input = {}
+
+        for node in self.graph.node:
+            for input_name in node.input:
+                if not input_name:
+                    continue
+                self.consumers_by_input.setdefault(input_name, []).append(node)
+
+            for output_name in node.output:
+                if not output_name:
+                    continue
+                if output_name in self.producer_by_output:
+                    raise ValueError(f"duplicate ONNX value producer for '{output_name}'")
+                self.producer_by_output[output_name] = node
+        
+        return 
+
+    @property
+    def producer(self) -> Dict[str, onnx.NodeProto]:
+        """Backward-compatible alias for producer-by-output lookup."""
+        return self.producer_by_output
+
+    @property
+    def consumer(self) -> Dict[str, List[onnx.NodeProto]]:
+        """Backward-compatible alias for consumers-by-input lookup."""
+        return self.consumers_by_input
+
+    def get_producer(self, value_name: str) -> onnx.NodeProto | None:
+        """Return the node that produces `value_name`, if it exists."""
+        if not value_name:
+            return None
+        return self.producer_by_output.get(value_name)
+
+    def get_consumers(self, value_name: str) -> List[onnx.NodeProto]:
+        """Return nodes that consume `value_name`."""
+        if not value_name:
+            return []
+        return self.consumers_by_input.get(value_name, [])
 
 
     @staticmethod

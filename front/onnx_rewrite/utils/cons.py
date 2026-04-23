@@ -110,3 +110,5 @@ __all__ = [
 
 
 OP_SUPPORTED_SET = SUPPORTED_OPS
+# factors that are used in onnx 
+EPS = 'epsilon'
