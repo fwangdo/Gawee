@@ -3,12 +3,23 @@
 이 디렉토리는 `Gawee`에서 parser / rewrite / quantization 실험에 공통으로 쓸 benchmark 모델을 모아 두는 곳이다.
 대용량 바이너리 자체는 저장소에 커밋하지 않고, 공개 소스에서 재현 시점에 다시 내려받는다.
 
+## Current Priority Trio
+
+graph rewrite의 근시일 우선 모델은 아래 3개다.
+
+- `onnx/vision/resnet18.onnx`
+- `onnx/nlp/distilbert_base_uncased/onnx/model.onnx`
+- `onnx/nlp/bert_tiny/onnx/model.onnx`
+
+즉 현재 우선순위는 `vision 1개 + NLP 2개` 조합이다.
+
+현재 frontend benchmark scope는 `ai.onnx opset >= 13` 모델만 대상으로 한다.
+
 ## Vision
 
 - `onnx/vision/resnet18.onnx`
-- `onnx/vision/mobilenetv3_small.onnx`
 
-둘 다 `torchvision`에서 로컬 export한다.
+`torchvision`에서 로컬 export한다.
 가중치는 benchmark graph 확보가 목적이므로 우선 `weights=None`으로 고정한다.
 
 ## NLP
@@ -20,20 +31,11 @@
 - `onnx/nlp/distilbert_base_uncased/onnx/model.onnx`
   - source: `onnx-community/distilbert-base-uncased-ONNX`
   - link: `https://huggingface.co/onnx-community/distilbert-base-uncased-ONNX/tree/a5d2f36/onnx`
-- `onnx/nlp/minilm_l12_h384_uncased/onnx/model.onnx`
-  - source: `microsoft/MiniLM-L12-H384-uncased`
-  - link: `https://huggingface.co/microsoft/MiniLM-L12-H384-uncased/tree/86186eff27cda7c5bc520e45de4800c575d9d8b3/onnx`
-- `onnx/nlp/mobilebert_uncased/onnx/model.onnx`
-  - source: `onnx-community/mobilebert-uncased-ONNX`
-  - link: `https://huggingface.co/onnx-community/mobilebert-uncased-ONNX/tree/942aa73/onnx`
-- `onnx/nlp/distilroberta_base/onnx/model.onnx`
-  - source: `Xenova/distilroberta-base`
-  - link: `https://huggingface.co/Xenova/distilroberta-base/tree/main/onnx`
 
 ## Reproduction
 
 NLP benchmark는 Hugging Face 공개 저장소에서 기본 ONNX 파일만 내려받는다.
-revision이 명확히 확인된 모델은 해당 commit으로 고정한다.
+현재는 `ai.onnx opset >= 13` 모델만 유지한다.
 
 ```bash
 python scripts/fetch_benchmark_models.py

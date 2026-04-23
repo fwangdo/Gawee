@@ -53,5 +53,9 @@ middle/mlir/test/*.tmp
 /todo/progress.md
 
 # Benchmark model binaries
+benchmarks/onnx/
+benchmarks/torchdata/
+benchmarks/**/.cache/
 benchmarks/**/*.onnx
+benchmarks/**/*.onnx_data
 benchmarks/**/*.onnx.data

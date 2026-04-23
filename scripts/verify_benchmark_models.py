@@ -15,13 +15,22 @@ def resolve_dim(dim: int | str | None) -> int:
 def make_input(array_info: ort.NodeArg) -> np.ndarray:
     shape = [resolve_dim(dim) for dim in array_info.shape]
     dtype_name = array_info.type.removeprefix("tensor(").removesuffix(")")
+    name = array_info.name.lower()
     if dtype_name in {"float", "float32"}:
         return np.random.randn(*shape).astype(np.float32)
     if dtype_name in {"double", "float64"}:
         return np.random.randn(*shape).astype(np.float64)
     if dtype_name in {"int64"}:
+        if "token_type" in name:
+            return np.random.randint(0, 2, size=shape, dtype=np.int64)
+        if "attention_mask" in name:
+            return np.random.randint(0, 2, size=shape, dtype=np.int64)
         return np.random.randint(0, 1000, size=shape, dtype=np.int64)
     if dtype_name in {"int32"}:
+        if "token_type" in name:
+            return np.random.randint(0, 2, size=shape, dtype=np.int32)
+        if "attention_mask" in name:
+            return np.random.randint(0, 2, size=shape, dtype=np.int32)
         return np.random.randint(0, 1000, size=shape, dtype=np.int32)
     if dtype_name in {"bool"}:
         return np.random.randint(0, 2, size=shape).astype(bool)

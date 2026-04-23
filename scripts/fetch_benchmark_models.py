@@ -14,18 +14,6 @@ NLP_BENCHMARKS = {
         "repo_id": "onnx-community/distilbert-base-uncased-ONNX",
         "revision": "a5d2f36",
     },
-    "minilm_l12_h384_uncased": {
-        "repo_id": "microsoft/MiniLM-L12-H384-uncased",
-        "revision": "86186eff27cda7c5bc520e45de4800c575d9d8b3",
-    },
-    "mobilebert_uncased": {
-        "repo_id": "onnx-community/mobilebert-uncased-ONNX",
-        "revision": "942aa73",
-    },
-    "distilroberta_base": {
-        "repo_id": "Xenova/distilroberta-base",
-        "revision": "main",
-    },
 }
 
 

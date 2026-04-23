@@ -56,6 +56,16 @@ Constant와 initializer는 계산 op로 세지 않는다.
 - [ ] `resnet18`
 - [ ] `mobilenetv3-small`
 
+## Near-Term Focus
+
+초기 graph rewrite 구현과 검증은 아래 3개 모델에 우선 집중한다.
+
+- [ ] `distilbert-base-uncased`
+- [ ] `google/mobilebert-uncased`
+- [ ] `mobilenetv3-small`
+
+`distilroberta-base`는 전체 NLP 5개 확장 단계에서 다시 포함한다.
+
 ## Immediate Order of Work
 
 이 프로젝트는 아래 순서로 진행한다.
@@ -68,6 +78,21 @@ Constant와 initializer는 계산 op로 세지 않는다.
 6. 5개 NLP 모델 전체 lowering 달성
 7. latency benchmark와 report 정리
 8. vision 보조 rewrite와 profiling 추가
+
+## MLIR Emitter Track
+
+ONNX rewrite 이후에는 Python IR를 한 번 더 거치기보다,
+normalized ONNX를 곧바로 MLIR의 `gawee` dialect로 emit하는 경로를 병행한다.
+
+- [ ] `JSON -> MLIR`와 병렬인 `ONNX -> MLIR` emitter scaffold 유지
+- [ ] `middle/mlir/include/Emit/ONNXMLIREmitter.h` 추가
+- [ ] `middle/mlir/lib/Emit/ONNXMLIREmitter.cpp` 추가
+- [ ] `middle/mlir/tools/gawee-onnx-translate.cpp` 추가
+- [ ] ONNX protobuf 의존성 연결 전에는 `GAWEE_ENABLE_ONNX_PROTO` opt-in 가드로 유지
+- [ ] normalized ONNX의 initializer / input / output contract 정의
+- [ ] supported op subset에서 `gawee.*` op로 가는 lowering map 문서화
+- [ ] `Conv`를 첫 complete reference emitter로 유지하고, 주석을 기준으로 `Relu`, `Add`, `MatMul/Gemm` 확장
+- [ ] 장기적으로 `ONNX -> gawee dialect -> Linalg` 경로를 주 경로로 검토
 
 ## Phase 0. Scope Freeze
 
