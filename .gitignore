@@ -59,3 +59,6 @@ benchmarks/**/.cache/
 benchmarks/**/*.onnx
 benchmarks/**/*.onnx_data
 benchmarks/**/*.onnx.data
+
+# Local learning notes
+front/onnx_rewrite/explain.md
