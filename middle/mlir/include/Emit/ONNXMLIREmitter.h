@@ -20,6 +20,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringMap.h"
 #include <onnx/onnx_pb.h>
@@ -43,6 +44,7 @@ private:
   MLIRContext *ctx;
   std::unique_ptr<OpBuilder> builder;
   std::string errorMsg;
+  llvm::StringMap<llvm::SmallVector<int64_t>> i64TensorLiterals;
 
   // ONNX node helpers. Each helper should:
   //   1. read operands from valueMap
