@@ -13,26 +13,267 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#if defined(GAWEE_ENABLE_ONNX_PROTO)
-#include <onnx/onnx_pb.h>
-#endif
-
 using namespace mlir;
 using namespace mlir::gawee;
+
+namespace {
+
+Value lookupMappedValue(llvm::StringRef name, llvm::StringMap<Value> &valueMap) {
+  auto it = valueMap.find(name);
+  if (it == valueMap.end()) {
+    return Value();
+  }
+  return it->second;
+}
+
+RankedTensorType lookupTensorType(llvm::StringRef name,
+                                  llvm::StringMap<RankedTensorType> &tensorTypes) {
+  auto it = tensorTypes.find(name);
+  if (it == tensorTypes.end()) {
+    return RankedTensorType();
+  }
+  return it->second;
+}
+
+DenseI64ArrayAttr getI64ArrayAttrFromNode(OpBuilder &builder,
+                                          const onnx::NodeProto &node,
+                                          llvm::StringRef attrName,
+                                          ArrayRef<int64_t> defaultValue) {
+  for (const auto &attr : node.attribute()) {
+    if (attr.name() != attrName) {
+      continue;
+    }
+
+    SmallVector<int64_t> values;
+    if (attr.ints_size() > 0) {
+      for (auto value : attr.ints()) {
+        values.push_back(value);
+      }
+    } else if (attr.has_i()) {
+      values.push_back(attr.i());
+      values.push_back(attr.i());
+    }
+    return builder.getDenseI64ArrayAttr(values);
+  }
+
+  return builder.getDenseI64ArrayAttr(defaultValue);
+}
+
+} // namespace
 
 ONNXMLIREmitter::ONNXMLIREmitter(MLIRContext *context) : ctx(context) {
   builder = std::make_unique<OpBuilder>(ctx);
 }
 
+bool ONNXMLIREmitter::emitRelu(
+    const onnx::NodeProto &node,
+    llvm::StringMap<Value> &valueMap,
+    llvm::StringMap<RankedTensorType> &tensorTypes) {
+  auto loc = builder->getUnknownLoc();
+
+  if (node.input_size() != 1 || node.output_size() != 1) {
+    setError("Relu expects exactly 1 input and 1 output");
+    return false;
+  }
+
+  Value input = lookupMappedValue(node.input(0), valueMap);
+  if (!input) {
+    setError("Relu input value not found in emitter environment: " + node.input(0));
+    return false;
+  }
+
+  auto resultType = lookupTensorType(node.output(0), tensorTypes);
+  if (!resultType) {
+    setError("Missing output tensor type for Relu output: " + node.output(0));
+    return false;
+  }
+
+  auto reluOp = builder->create<ReluOp>(loc, resultType, input);
+  valueMap[node.output(0)] = reluOp.getResult();
+  return true;
+}
+
+bool ONNXMLIREmitter::emitAdd(
+    const onnx::NodeProto &node,
+    llvm::StringMap<Value> &valueMap,
+    llvm::StringMap<RankedTensorType> &tensorTypes) {
+  auto loc = builder->getUnknownLoc();
+
+  if (node.input_size() != 2 || node.output_size() != 1) {
+    setError("Add expects exactly 2 inputs and 1 output");
+    return false;
+  }
+
+  Value lhs = lookupMappedValue(node.input(0), valueMap);
+  if (!lhs) {
+    setError("Add lhs value not found in emitter environment: " + node.input(0));
+    return false;
+  }
+
+  Value rhs = lookupMappedValue(node.input(1), valueMap);
+  if (!rhs) {
+    setError("Add rhs value not found in emitter environment: " + node.input(1));
+    return false;
+  }
+
+  auto resultType = lookupTensorType(node.output(0), tensorTypes);
+  if (!resultType) {
+    setError("Missing output tensor type for Add output: " + node.output(0));
+    return false;
+  }
+
+  auto addOp = builder->create<AddOp>(loc, resultType, lhs, rhs);
+  valueMap[node.output(0)] = addOp.getResult();
+  return true;
+}
+
+#define GAWEE_ONNX_STUB(MethodName, OpName)                                    \
+  bool ONNXMLIREmitter::MethodName(                                            \
+      const onnx::NodeProto &node,                                             \
+      llvm::StringMap<Value> &valueMap,                                        \
+      llvm::StringMap<RankedTensorType> &tensorTypes) {                        \
+    (void)node;                                                                \
+    (void)valueMap;                                                            \
+    (void)tensorTypes;                                                         \
+    setError("TODO: implement " OpName " in ONNXMLIREmitter");                \
+    return false;                                                              \
+  }
+
+GAWEE_ONNX_STUB(emitAveragePool, "emitAveragePool()")
+GAWEE_ONNX_STUB(emitCast, "emitCast()")
+GAWEE_ONNX_STUB(emitConcat, "emitConcat()")
+
+bool ONNXMLIREmitter::emitConv(
+    const onnx::NodeProto &node,
+    llvm::StringMap<Value> &valueMap,
+    llvm::StringMap<RankedTensorType> &tensorTypes) {
+  auto loc = builder->getUnknownLoc();
+
+  if (node.input_size() < 2 || node.output_size() < 1) {
+    setError("Conv node is missing required inputs/outputs");
+    return false;
+  }
+
+  Value input = lookupMappedValue(node.input(0), valueMap);
+  if (!input) {
+    setError("Conv input value not found in emitter environment: " + node.input(0));
+    return false;
+  }
+
+  Value weight = lookupMappedValue(node.input(1), valueMap);
+  if (!weight) {
+    setError("Conv weight value not found in emitter environment: " + node.input(1));
+    return false;
+  }
+
+  auto resultType = lookupTensorType(node.output(0), tensorTypes);
+  if (!resultType) {
+    setError("Missing output tensor type for Conv output: " + node.output(0));
+    return false;
+  }
+
+  Value biasValue;
+  if (node.input_size() >= 3 && !node.input(2).empty()) {
+    biasValue = lookupMappedValue(node.input(2), valueMap);
+    if (!biasValue) {
+      setError("Conv bias value not found in emitter environment: " + node.input(2));
+      return false;
+    }
+  } else {
+    auto weightType = dyn_cast<RankedTensorType>(weight.getType());
+    if (!weightType || weightType.getRank() < 1 || weightType.isDynamicDim(0)) {
+      setError("Cannot synthesize Conv bias because weight output channel is unknown");
+      return false;
+    }
+
+    int64_t outChannels = weightType.getShape()[0];
+    auto biasType = RankedTensorType::get({outChannels}, weightType.getElementType());
+    auto zeroAttr = DenseElementsAttr::get(
+        biasType, builder->getZeroAttr(weightType.getElementType()));
+    biasValue = arith::ConstantOp::create(*builder, loc, biasType, zeroAttr);
+  }
+
+  auto strides = getI64ArrayAttrFromNode(*builder, node, "strides", {1, 1});
+  auto padding = getI64ArrayAttrFromNode(*builder, node, "pads", {0, 0});
+  auto dilation = getI64ArrayAttrFromNode(*builder, node, "dilations", {1, 1});
+
+  SmallVector<int64_t> normalizedPadding(padding.asArrayRef().begin(),
+                                         padding.asArrayRef().end());
+  if (normalizedPadding.size() == 4) {
+    normalizedPadding = {normalizedPadding[0], normalizedPadding[1]};
+  }
+
+  auto convOp = builder->create<ConvOp>(
+      loc,
+      resultType,
+      input,
+      weight,
+      biasValue,
+      strides,
+      builder->getDenseI64ArrayAttr(normalizedPadding),
+      dilation);
+
+  valueMap[node.output(0)] = convOp.getResult();
+  return true;
+}
+
+GAWEE_ONNX_STUB(emitSub, "emitSub()")
+GAWEE_ONNX_STUB(emitDiv, "emitDiv()")
+GAWEE_ONNX_STUB(emitEqual, "emitEqual()")
+GAWEE_ONNX_STUB(emitErf, "emitErf()")
+GAWEE_ONNX_STUB(emitExpand, "emitExpand()")
+GAWEE_ONNX_STUB(emitGelu, "emitGelu()")
+GAWEE_ONNX_STUB(emitGlobalAveragePool, "emitGlobalAveragePool()")
+GAWEE_ONNX_STUB(emitHardSigmoid, "emitHardSigmoid()")
+GAWEE_ONNX_STUB(emitHardSwish, "emitHardSwish()")
+GAWEE_ONNX_STUB(emitLeakyRelu, "emitLeakyRelu()")
+GAWEE_ONNX_STUB(emitMax, "emitMax()")
+GAWEE_ONNX_STUB(emitMaxPool, "emitMaxPool()")
+GAWEE_ONNX_STUB(emitMin, "emitMin()")
+GAWEE_ONNX_STUB(emitMul, "emitMul()")
+GAWEE_ONNX_STUB(emitPad, "emitPad()")
+GAWEE_ONNX_STUB(emitReduceMean, "emitReduceMean()")
+GAWEE_ONNX_STUB(emitReduceSum, "emitReduceSum()")
+GAWEE_ONNX_STUB(emitReshape, "emitReshape()")
+GAWEE_ONNX_STUB(emitShape, "emitShape()")
+GAWEE_ONNX_STUB(emitSigmoid, "emitSigmoid()")
+GAWEE_ONNX_STUB(emitSlice, "emitSlice()")
+GAWEE_ONNX_STUB(emitSoftmax, "emitSoftmax()")
+GAWEE_ONNX_STUB(emitSqrt, "emitSqrt()")
+GAWEE_ONNX_STUB(emitSqueeze, "emitSqueeze()")
+GAWEE_ONNX_STUB(emitTanh, "emitTanh()")
+GAWEE_ONNX_STUB(emitTranspose, "emitTranspose()")
+GAWEE_ONNX_STUB(emitUnsqueeze, "emitUnsqueeze()")
+GAWEE_ONNX_STUB(emitWhere, "emitWhere()")
+GAWEE_ONNX_STUB(emitBatchNormalization, "emitBatchNormalization()")
+GAWEE_ONNX_STUB(emitFlatten, "emitFlatten()")
+
+bool ONNXMLIREmitter::emitLinearLike(
+    const onnx::NodeProto &node,
+    llvm::StringMap<Value> &valueMap,
+    llvm::StringMap<RankedTensorType> &tensorTypes) {
+  (void)node;
+  (void)valueMap;
+  (void)tensorTypes;
+
+  // TODO: decide ONNX MatMul/Gemm -> gawee.linear contract.
+  //
+  // What to read first:
+  //   - MLIREmitter::emitLinear() in middle/mlir/lib/Emit/MLIREmitter.cpp
+  //   - rewrite_gemm.py and rewrite_matmul.py in front/onnx_rewrite/passes
+  //   - Gawee_LinearOp in middle/mlir/include/Gawee/GaweeOps.td
+  //
+  // Questions to answer before coding:
+  //   - will normalized ONNX still contain Gemm or only MatMul-like forms?
+  //   - when can gawee.linear represent the ONNX node exactly?
+  //   - if bias is absent, do we synthesize zero bias like Conv does?
+  setError("TODO: implement emitLinearLike() in ONNXMLIREmitter");
+  return false;
+}
+
+#undef GAWEE_ONNX_STUB
+
 OwningOpRef<ModuleOp> ONNXMLIREmitter::emitFromFile(llvm::StringRef onnxPath) {
-#if !defined(GAWEE_ENABLE_ONNX_PROTO)
-  // Keep the build path open even before ONNX/protobuf dependencies are wired.
-  // Once those dependencies are available, enable GAWEE_ENABLE_ONNX_PROTO and
-  // the Conv path below becomes the reference implementation.
-  (void)createEmptyModule(onnxPath);
-  setError("ONNXMLIREmitter scaffold exists. Enable GAWEE_ENABLE_ONNX_PROTO and link ONNX/protobuf to parse ONNX files.");
-  return nullptr;
-#else
   // -----------------------------------------------------------------------
   // Basic ONNX -> gawee dialect path
   //
@@ -50,6 +291,8 @@ OwningOpRef<ModuleOp> ONNXMLIREmitter::emitFromFile(llvm::StringRef onnxPath) {
 
   onnx::ModelProto model;
   std::ifstream inputFile(std::string(onnxPath), std::ios::binary);
+
+  // error handling case. 
   if (!inputFile.good()) {
     setError("Could not open ONNX file: " + onnxPath.str());
     return nullptr;
@@ -68,6 +311,7 @@ OwningOpRef<ModuleOp> ONNXMLIREmitter::emitFromFile(llvm::StringRef onnxPath) {
 
   auto loc = builder->getUnknownLoc();
   auto module = ModuleOp::create(loc);
+  // cursor move. it moves to the end of module.getBody() 
   builder->setInsertionPointToEnd(module.getBody());
 
   // --- Local helpers ------------------------------------------------------
@@ -108,6 +352,8 @@ OwningOpRef<ModuleOp> ONNXMLIREmitter::emitFromFile(llvm::StringRef onnxPath) {
     if (!elementType) {
       return RankedTensorType();
     }
+
+    // only if we can return shape and valtype. 
     return RankedTensorType::get(shape, elementType);
   };
 
@@ -131,32 +377,9 @@ OwningOpRef<ModuleOp> ONNXMLIREmitter::emitFromFile(llvm::StringRef onnxPath) {
     return RankedTensorType::get(shape, elementType);
   };
 
-  auto getI64ArrayAttr = [&](const onnx::NodeProto &node, llvm::StringRef attrName,
-                             SmallVector<int64_t> defaultValue) -> DenseI64ArrayAttr {
-    for (const auto &attr : node.attribute()) {
-      if (attr.name() != attrName) {
-        continue;
-      }
-
-      SmallVector<int64_t> values;
-      if (attr.ints_size() > 0) {
-        for (auto v : attr.ints()) {
-          values.push_back(v);
-        }
-      } else if (attr.has_i()) {
-        // ONNX sometimes stores scalar forms for stride/padding-like attrs.
-        // Normalize scalar -> 2D pair because current gawee.conv is 2D-focused.
-        values.push_back(attr.i());
-        values.push_back(attr.i());
-      }
-      return builder->getDenseI64ArrayAttr(values);
-    }
-    return builder->getDenseI64ArrayAttr(defaultValue);
-  };
-
   // --- Collect types from ONNX graph -------------------------------------
   // We need names -> tensor types before creating the function signature.
-  std::unordered_map<std::string, RankedTensorType> tensorTypes;
+  llvm::StringMap<RankedTensorType> tensorTypes;
   std::unordered_set<std::string> initializerNames;
 
   for (const auto &valueInfo : graph.input()) {
@@ -233,100 +456,201 @@ OwningOpRef<ModuleOp> ONNXMLIREmitter::emitFromFile(llvm::StringRef onnxPath) {
   builder->setInsertionPointToStart(entryBlock);
   func->setAttr("gawee.onnx_source", builder->getStringAttr(onnxPath));
 
-  std::unordered_map<std::string, Value> valueMap;
+  llvm::StringMap<Value> valueMap;
   for (size_t i = 0; i < argNames.size(); ++i) {
     valueMap[argNames[i]] = entryBlock->getArgument(i);
   }
 
   // --- Emit nodes ---------------------------------------------------------
-  // Only Conv is implemented "for real" here.
-  // Treat the rest as explicit TODOs so you can extend one op family at a time.
   for (const auto &node : graph.node()) {
-    if (node.op_type() != "Conv") {
-      setError("ONNXMLIREmitter currently implements Conv only. Unsupported op during emission: " + node.op_type());
-      return nullptr;
-    }
-
-    if (node.input_size() < 2 || node.output_size() < 1) {
-      setError("Conv node is missing required inputs/outputs");
-      return nullptr;
-    }
-
-    auto inputIt = valueMap.find(node.input(0));
-    auto weightIt = valueMap.find(node.input(1));
-    if (inputIt == valueMap.end()) {
-      setError("Conv input value not found in emitter environment: " + node.input(0));
-      return nullptr;
-    }
-    if (weightIt == valueMap.end()) {
-      setError("Conv weight value not found in emitter environment: " + node.input(1));
-      return nullptr;
-    }
-
-    auto resultTypeIt = tensorTypes.find(node.output(0));
-    if (resultTypeIt == tensorTypes.end()) {
-      setError("Missing output tensor type for Conv output: " + node.output(0));
-      return nullptr;
-    }
-
-    Value biasValue;
-    if (node.input_size() >= 3 && !node.input(2).empty()) {
-      auto biasIt = valueMap.find(node.input(2));
-      if (biasIt == valueMap.end()) {
-        setError("Conv bias value not found in emitter environment: " + node.input(2));
+    if (node.op_type() == "Relu") {
+      if (!emitRelu(node, valueMap, tensorTypes))
         return nullptr;
-      }
-      biasValue = biasIt->second;
-    } else {
-      // ONNX Conv allows bias to be omitted.
-      // Our gawee.conv currently always takes a bias operand, so synthesize
-      // a zero bias tensor of shape [Cout]. This keeps gawee dialect emission
-      // simple while still accepting common Conv forms from normalized ONNX.
-      auto weightType = dyn_cast<RankedTensorType>(weightIt->second.getType());
-      if (!weightType || weightType.getRank() < 1 || weightType.isDynamicDim(0)) {
-        setError("Cannot synthesize Conv bias because weight output channel is unknown");
+      continue;
+    }
+    if (node.op_type() == "Add") {
+      if (!emitAdd(node, valueMap, tensorTypes))
         return nullptr;
-      }
-
-      int64_t outChannels = weightType.getShape()[0];
-      auto biasType = RankedTensorType::get({outChannels}, weightType.getElementType());
-      auto zeroAttr = DenseElementsAttr::get(
-          biasType, builder->getZeroAttr(weightType.getElementType()));
-      biasValue = arith::ConstantOp::create(*builder, loc, biasType, zeroAttr);
+      continue;
+    }
+    if (node.op_type() == "MatMul" || node.op_type() == "Gemm") {
+      if (!emitLinearLike(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Conv") {
+      if (!emitConv(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "AveragePool") {
+      if (!emitAveragePool(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Cast") {
+      if (!emitCast(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Concat") {
+      if (!emitConcat(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Sub") {
+      if (!emitSub(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Div") {
+      if (!emitDiv(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Equal") {
+      if (!emitEqual(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Erf") {
+      if (!emitErf(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Expand") {
+      if (!emitExpand(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Gelu") {
+      if (!emitGelu(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "GlobalAveragePool") {
+      if (!emitGlobalAveragePool(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "HardSigmoid") {
+      if (!emitHardSigmoid(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "HardSwish") {
+      if (!emitHardSwish(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "LeakyRelu") {
+      if (!emitLeakyRelu(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Max") {
+      if (!emitMax(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "MaxPool") {
+      if (!emitMaxPool(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Min") {
+      if (!emitMin(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Mul") {
+      if (!emitMul(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Pad") {
+      if (!emitPad(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "ReduceMean") {
+      if (!emitReduceMean(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "ReduceSum") {
+      if (!emitReduceSum(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Reshape") {
+      if (!emitReshape(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Shape") {
+      if (!emitShape(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Sigmoid") {
+      if (!emitSigmoid(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Slice") {
+      if (!emitSlice(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Softmax") {
+      if (!emitSoftmax(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Sqrt") {
+      if (!emitSqrt(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Squeeze") {
+      if (!emitSqueeze(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Tanh") {
+      if (!emitTanh(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Transpose") {
+      if (!emitTranspose(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Unsqueeze") {
+      if (!emitUnsqueeze(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Where") {
+      if (!emitWhere(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "BatchNormalization") {
+      if (!emitBatchNormalization(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Flatten") {
+      if (!emitFlatten(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
     }
 
-    // Map core ONNX Conv attrs into gawee.conv attrs.
-    // Defaults follow ONNX Conv defaults for the 2D case.
-    auto strides = getI64ArrayAttr(node, "strides", {1, 1});
-    auto padding = getI64ArrayAttr(node, "pads", {0, 0});
-    auto dilation = getI64ArrayAttr(node, "dilations", {1, 1});
-
-    // NOTE:
-    // ONNX pads for 2D Conv is usually [top, left, bottom, right].
-    // Current gawee.conv expects a simpler 2-element style inherited from the
-    // existing JSON emitter. For the first pass we keep this scaffold minimal:
-    // if ONNX gives 4 values, use the leading pair [top, left].
-    // This is good enough to understand the plumbing, but should be upgraded to
-    // a fully-specified padding contract once more ops are added.
-    SmallVector<int64_t> normalizedPadding;
-    for (auto v : padding.asArrayRef()) {
-      normalizedPadding.push_back(v);
-    }
-    if (normalizedPadding.size() == 4) {
-      normalizedPadding = {normalizedPadding[0], normalizedPadding[1]};
-    }
-
-    auto convOp = builder->create<ConvOp>(
-        loc,
-        resultTypeIt->second,
-        inputIt->second,
-        weightIt->second,
-        biasValue,
-        strides,
-        builder->getDenseI64ArrayAttr(normalizedPadding),
-        dilation);
-
-    valueMap[node.output(0)] = convOp.getResult();
+    setError("Unsupported op during emission: " + node.op_type());
+    return nullptr;
   }
 
   // --- Return outputs -----------------------------------------------------
@@ -342,7 +666,6 @@ OwningOpRef<ModuleOp> ONNXMLIREmitter::emitFromFile(llvm::StringRef onnxPath) {
   builder->create<func::ReturnOp>(loc, returnValues);
 
   return module;
-#endif
 }
 
 OwningOpRef<ModuleOp> ONNXMLIREmitter::createEmptyModule(llvm::StringRef onnxPath) {
