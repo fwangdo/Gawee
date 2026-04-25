@@ -5,9 +5,11 @@ import onnx
 from .cleanup import Cleanup
 from .constant_folding import ConstantFolding
 from .eliminate_id import EliminateId
+from .rewrite_bn import RewriteBN
 from .rewrite_gather import RewriteGather
 from .rewrite_gemm import RewriteGemm
 from .rewrite_matmul import RewriteMatmul
+from .rewrite_pow import RewritePow
 
 
 class Passer:
@@ -17,6 +19,8 @@ class Passer:
         self.passes = [
             ConstantFolding(),
             EliminateId(),
+            RewriteBN(),
+            RewritePow(),
             RewriteGather(),
             RewriteGemm(),
             RewriteMatmul(),
