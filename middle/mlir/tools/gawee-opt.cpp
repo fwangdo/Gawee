@@ -15,6 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Gawee/GaweeDialect.h"
+#include "Conversion/GaweePasses.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -50,12 +51,6 @@ using namespace mlir;
 //===----------------------------------------------------------------------===//
 // Pass Declaration
 //===----------------------------------------------------------------------===//
-// Declare the pass creation function (defined in GaweeToLinalg.cpp)
-
-namespace mlir::gawee {
-std::unique_ptr<Pass> createGaweeToLinalgPass();
-}
-
 //===----------------------------------------------------------------------===//
 // Main Entry Point
 //===----------------------------------------------------------------------===//
@@ -76,11 +71,19 @@ int main(int argc, char **argv) {
       [](OpPassManager &pm) {
         // Step 1: Gawee -> Linalg (on tensors)
         pm.addPass(gawee::createGaweeToLinalgPass());
-        // Step 2: Bufferize (tensor -> memref)
+
+        // Step 2: Linalg-level transform slot (tiling / scheduling / fusion)
+        pm.addPass(gawee::createLinalgTransformScaffoldPass());
+
+        // Step 3: Bufferization preparation slot
+        pm.addPass(gawee::createGaweeBufferizePrepScaffoldPass());
+
+        // Step 4: Bufferize (tensor -> memref)
         bufferization::OneShotBufferizePassOptions bufOpts;
         bufOpts.bufferizeFunctionBoundaries = true;
         pm.addPass(bufferization::createOneShotBufferizePass(bufOpts));
-        // Step 3: Linalg -> SCF loops
+
+        // Step 5: Linalg -> SCF loops
         pm.addPass(createConvertLinalgToLoopsPass());
       });
 
@@ -92,28 +95,34 @@ int main(int argc, char **argv) {
         // Step 1: Gawee -> Linalg (on tensors)
         pm.addPass(gawee::createGaweeToLinalgPass());
 
-        // Step 2: Convert tensor.empty to bufferization.alloc_tensor
+        // Step 2: Linalg-level transform slot (tiling / scheduling / fusion)
+        pm.addPass(gawee::createLinalgTransformScaffoldPass());
+
+        // Step 3: Convert tensor.empty to bufferization.alloc_tensor
         // (required for proper bufferization)
         pm.addPass(bufferization::createEmptyTensorToAllocTensorPass());
 
-        // Step 3: Bufferize (tensor -> memref)
+        // Step 4: Bufferization preparation slot
+        pm.addPass(gawee::createGaweeBufferizePrepScaffoldPass());
+
+        // Step 5: Bufferize (tensor -> memref)
         bufferization::OneShotBufferizePassOptions bufOpts;
         bufOpts.bufferizeFunctionBoundaries = true;
         pm.addPass(bufferization::createOneShotBufferizePass(bufOpts));
 
-        // Step 4: Linalg -> SCF loops
+        // Step 6: Linalg -> SCF loops
         pm.addPass(createConvertLinalgToLoopsPass());
 
-        // Step 5: SCF -> ControlFlow (cf dialect)
+        // Step 7: SCF -> ControlFlow (cf dialect)
         pm.addPass(createSCFToControlFlowPass());
 
-        // Step 6: Convert to LLVM dialect
+        // Step 8: Convert to LLVM dialect
         pm.addPass(createArithToLLVMConversionPass());
         pm.addPass(createConvertControlFlowToLLVMPass());
         pm.addPass(createFinalizeMemRefToLLVMConversionPass());
         pm.addPass(createConvertFuncToLLVMPass());
 
-        // Step 7: Clean up unrealized casts
+        // Step 9: Clean up unrealized casts
         pm.addPass(createReconcileUnrealizedCastsPass());
       });
 

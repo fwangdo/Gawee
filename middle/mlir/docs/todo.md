@@ -74,6 +74,11 @@ This file tracks what you need to study and practice.
 - Linalg to loops conversion
 - MLIR built-in passes
 
+### Pipeline Clarification
+- `Gawee -> Linalg` and `Linalg -> SCF` are not the same step
+- There is now an explicit middle slot for `Linalg`-level transforms
+- Typical work in that slot: tiling, fusion, scheduling, vectorization prep
+
 ---
 
 ## Phase 6: JSON → Gawee MLIR (Translator) 🔄 CURRENT
@@ -115,6 +120,18 @@ This file tracks what you need to study and practice.
 - Multiple conversion passes and order
 - UnrealizedConversionCast
 - mlir-translate (MLIR ↔ LLVM IR)
+
+### Updated Mental Model
+- Step 1: `Gawee -> Linalg` legalization
+- Step 2: `Linalg` transform pass
+  - current scaffold: `lib/Conversion/LinalgTransformScaffold.cpp`
+  - intended ownership: tiling / fusion / scheduling before bufferization
+- Step 3: bufferization preparation
+  - current scaffold: `lib/Conversion/BufferizePrepScaffold.cpp`
+  - intended ownership: pre-bufferization cleanup and normalization
+- Step 4: one-shot bufferization (`tensor -> memref`)
+- Step 5: `Linalg(memref) -> SCF`
+- Step 6: `SCF -> CF -> LLVM`
 
 ---
 
