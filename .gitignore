@@ -51,6 +51,7 @@ compile_commands.json
 middle/mlir/test/*.tmp
 /test_output/
 /todo/progress.md
+/todo/
 
 # Benchmark model binaries
 benchmarks/onnx/
@@ -66,3 +67,4 @@ middle/todo.md
 middle/mlir/lib/Emit/onnx_prac.cpp
 middle/mlir/lib/Conversion/gawee_to_linalg_prac.cpp
 middle/mlir/lib/Conversion/LinalgTransformScaffold_Explain.md
+back/demo/
