@@ -64,3 +64,5 @@ benchmarks/**/*.onnx.data
 front/onnx_rewrite/explain.md
 middle/todo.md
 middle/mlir/lib/Emit/onnx_prac.cpp
+middle/mlir/lib/Conversion/gawee_to_linalg_prac.cpp
+middle/mlir/lib/Conversion/LinalgTransformScaffold_Explain.md
