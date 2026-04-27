@@ -18,6 +18,7 @@
 #include "Conversion/GaweePasses.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/SmallString.h"
@@ -33,22 +34,53 @@ static bool hasStaticTensorResult(Operation *op) {
   return rankedType && rankedType.hasStaticShape();
 }
 
+static int64_t chooseVectorWidthHint(linalg::LinalgOp op) {
+  if (op->getNumResults() != 1)
+    return 1;
+  auto rankedType = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+  if (!rankedType || !rankedType.hasStaticShape() || rankedType.getRank() == 0)
+    return 1;
+
+  int64_t innermost = rankedType.getShape().back();
+  if (ShapedType::isDynamic(innermost))
+    return 1;
+  if (innermost % 16 == 0)
+    return 16;
+  if (innermost % 8 == 0)
+    return 8;
+  if (innermost % 4 == 0)
+    return 4;
+  return 1;
+}
+
 static void analyzeVectorizationReadiness(ModuleOp module) {
+  Builder builder(module.getContext());
   module.walk([&](linalg::LinalgOp op) {
     SmallString<128> message;
     llvm::raw_svector_ostream os(message);
     os << "vectorization scaffold: ";
+    int64_t widthHint = chooseVectorWidthHint(op);
     if (hasStaticTensorResult(op.getOperation()))
       os << "static result shape available";
     else
       os << "dynamic or non-tensor result limits vector planning";
 
-    if (isa<linalg::MatmulOp, linalg::MatmulTransposeBOp>(op.getOperation()))
+    StringRef kind = "generic";
+    if (isa<linalg::MatmulOp, linalg::MatmulTransposeBOp>(op.getOperation())) {
       os << ", contraction op is a prime vectorization candidate";
-    else if (isa<linalg::Conv2DNchwFchwOp>(op.getOperation()))
+      kind = "contraction";
+    } else if (isa<linalg::Conv2DNchwFchwOp>(op.getOperation())) {
       os << ", conv op likely needs layout/tile prep before vector lowering";
-    else
+      kind = "convolution";
+    } else {
       os << ", generic/vector transfer path should be evaluated";
+    }
+
+    op->setAttr("gawee.vector.kind", builder.getStringAttr(kind));
+    op->setAttr("gawee.vector.width_hint",
+                builder.getI64IntegerAttr(widthHint));
+    op->setAttr("gawee.vector.static_result",
+                builder.getBoolAttr(hasStaticTensorResult(op.getOperation())));
     op->emitRemark() << os.str();
   });
 }

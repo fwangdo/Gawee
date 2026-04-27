@@ -19,6 +19,7 @@
 #include "Conversion/GaweePasses.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/Pass/Pass.h"
@@ -43,7 +44,29 @@ static bool isConvOrMatmul(Operation *op) {
              linalg::MatmulTransposeBOp>(op);
 }
 
+static bool hasSingleTensorResult(Operation *op) {
+  return op->getNumResults() == 1 && isa<RankedTensorType>(op->getResult(0).getType());
+}
+
+static bool isLikelyFusionPair(Operation *producer, Operation *consumer) {
+  if (!hasSingleTensorResult(producer))
+    return false;
+  if (producer->getBlock() != consumer->getBlock())
+    return false;
+  if (producer->getResult(0).hasOneUse() == false)
+    return false;
+
+  if (isConvOrMatmul(producer) && isElementwiseGeneric(consumer))
+    return true;
+  if (isElementwiseGeneric(producer) && isElementwiseGeneric(consumer))
+    return true;
+  return false;
+}
+
 static void analyzeProducerConsumerChains(ModuleOp module) {
+  Builder builder(module.getContext());
+  int64_t nextGroupId = 0;
+
   module.walk([&](Operation *op) {
     if (!isElementwiseGeneric(op) && !isConvOrMatmul(op))
       return;
@@ -57,8 +80,34 @@ static void analyzeProducerConsumerChains(ModuleOp module) {
     else
       os << ": elementwise generic op that may fuse with neighbors";
 
+    if (hasSingleTensorResult(op)) {
+      for (Operation *user : op->getResult(0).getUsers()) {
+        if (!isa<linalg::LinalgOp>(user))
+          continue;
+        if (!isLikelyFusionPair(op, user))
+          continue;
+
+        op->setAttr("gawee.fusion.group",
+                    builder.getI64IntegerAttr(nextGroupId));
+        op->setAttr("gawee.fusion.role",
+                    builder.getStringAttr("producer"));
+        user->setAttr("gawee.fusion.group",
+                      builder.getI64IntegerAttr(nextGroupId));
+        user->setAttr("gawee.fusion.role",
+                      builder.getStringAttr("consumer"));
+        user->setAttr("gawee.fusion.source",
+                      builder.getStringAttr(op->getName().getStringRef()));
+        os << ", assigned fusion_group=" << nextGroupId;
+        ++nextGroupId;
+        break;
+      }
+    }
+
     op->emitRemark() << os.str();
   });
+
+  module->setAttr("gawee.fusion.group_count",
+                  builder.getI64IntegerAttr(nextGroupId));
 }
 
 struct LinalgFusionScaffoldPass
