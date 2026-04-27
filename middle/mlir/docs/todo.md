@@ -197,16 +197,17 @@ This file tracks what you need to study and practice.
   - `gawee-to-llvm`: passes
   - AOT runner build: passes
   - AOT runner execution: passes
-  - output shape now matches ONNX Runtime: `(1, 1000)`
-  - current correctness gap still exists:
-    - `max_abs_diff ~= 1.57`
-    - `np.allclose(..., atol=1e-4, rtol=1e-4)` fails
+  - output shape matches ONNX Runtime: `(1, 1000)`
+  - correctness now matches ONNX Runtime on the saved evaluation input:
+    - `max_abs_diff ~= 2.86e-06`
+    - `mean_abs_diff ~= 6.07e-07`
+    - `np.allclose(..., atol=1e-4, rtol=1e-4)` passes
   - current latency baseline:
-    - Gawee AOT end-to-end runner: about `6.46s ~ 6.52s`
-    - ONNX Runtime inference-only: about `19.6ms ~ 31.1ms`
+    - Gawee AOT end-to-end runner: about `6.52s ~ 6.59s`
+    - ONNX Runtime inference-only: about `15.4ms ~ 17.4ms`
   - interpretation:
-    - the backend execution path is now closed
-    - the result is not numerically aligned yet
+    - the backend execution path is closed
+    - the result is numerically aligned on the current saved-input check
     - the current AOT latency includes file I/O and process launch, so it is only a coarse baseline
 - `bert_tiny`, `distilbert_base_uncased`
   - translator and several dynamic lowering blockers were improved

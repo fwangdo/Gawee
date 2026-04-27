@@ -112,6 +112,13 @@ static Value createEmptyTensorFromShapeTensor(OpBuilder &builder, Location loc,
                                  outputType.getElementType(), dynamicSizes);
 }
 
+static DenseIntElementsAttr makeI64ElementsAttr(OpBuilder &builder,
+                                                ArrayRef<int64_t> values) {
+  auto attrType = RankedTensorType::get(
+      {static_cast<int64_t>(values.size())}, builder.getI64Type());
+  return DenseIntElementsAttr::get(attrType, values);
+}
+
 static AffineMap buildBroadcastMap(RankedTensorType inputType,
                                    RankedTensorType outputType,
                                    MLIRContext *ctx) {
@@ -325,8 +332,8 @@ struct ConvOpLowering : public OpConversionPattern<gawee::ConvOp> {
     Value bias = adaptor.getBias(); // TODO  
 
     // Step 2: Get attributes (use *Attr() to get Attribute, not ArrayRef)
-    auto strides = op.getStridesAttr();
-    auto dilations = op.getDilationAttr();
+    auto strides = makeI64ElementsAttr(rewriter, op.getStrides());
+    auto dilations = makeI64ElementsAttr(rewriter, op.getDilation());
     auto padding = op.getPadding(); // ArrayRef<int64_t>
 
     // Step 3: Pad input if padding is non-zero.
@@ -555,9 +562,9 @@ struct MaxPoolOpLowering : public OpConversionPattern<gawee::MaxPoolOp> {
 
     // Step 1: Get all features.
     Value input = adaptor.getInput();
-    auto strides = adaptor.getStridesAttr();
+    auto strides = makeI64ElementsAttr(rewriter, op.getStrides());
     auto padding = adaptor.getPadding(); // ArrayRef<int64_t>
-    auto dilation = adaptor.getDilationAttr();
+    auto dilation = makeI64ElementsAttr(rewriter, op.getDilation());
 
     // Step 2: Get output type and create empty output tensor
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
@@ -733,8 +740,8 @@ struct AdAvgOpLowering : public OpConversionPattern<gawee::AdAvgPoolOp> {
     );
 
     // 5. Extract attributes for operation. 
-    auto strideAttr = rewriter.getDenseI64ArrayAttr({1, 1});
-    auto dilationAttr = rewriter.getDenseI64ArrayAttr({1,1});
+    auto strideAttr = makeI64ElementsAttr(rewriter, {1, 1});
+    auto dilationAttr = makeI64ElementsAttr(rewriter, {1, 1});
 
     // 6. Generate Sumpool, which is the preliminary step for generating adaptive average.
     auto sumPool = linalg::PoolingNchwSumOp::create(
@@ -1008,7 +1015,7 @@ struct AveragePoolOpLowering
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
     Value input = adaptor.getInput();
-    auto strides = adaptor.getStridesAttr();
+    auto strides = makeI64ElementsAttr(rewriter, op.getStrides());
     auto padding = adaptor.getPadding();
 
     if (!op.getCountIncludePad() && (padding[0] != 0 || padding[1] != 0)) {
@@ -1056,7 +1063,7 @@ struct AveragePoolOpLowering
 
     auto sumPool = linalg::PoolingNchwSumOp::create(
         rewriter, loc, outputType, ValueRange{input, windowTensor},
-        ValueRange{zeroFilled}, strides, rewriter.getDenseI64ArrayAttr({1, 1}));
+        ValueRange{zeroFilled}, strides, makeI64ElementsAttr(rewriter, {1, 1}));
 
     int64_t kernelCount =
         adaptor.getKernelSize()[0] * adaptor.getKernelSize()[1];
@@ -1122,8 +1129,8 @@ struct GlobalAveragePoolOpLowering
 
     auto sumPool = linalg::PoolingNchwSumOp::create(
         rewriter, loc, outputType, ValueRange{input, windowTensor},
-        ValueRange{zeroFilled}, rewriter.getDenseI64ArrayAttr({1, 1}),
-        rewriter.getDenseI64ArrayAttr({1, 1}));
+        ValueRange{zeroFilled}, makeI64ElementsAttr(rewriter, {1, 1}),
+        makeI64ElementsAttr(rewriter, {1, 1}));
 
     Value countVal = arith::ConstantOp::create(
         rewriter, loc,
