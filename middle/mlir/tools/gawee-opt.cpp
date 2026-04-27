@@ -74,6 +74,10 @@ int main(int argc, char **argv) {
 
         // Step 2: Linalg-level transform slot (tiling / scheduling / fusion)
         pm.addPass(gawee::createLinalgTransformScaffoldPass());
+        pm.addPass(gawee::createLinalgFusionScaffoldPass());
+        pm.addPass(gawee::createLinalgSchedulingScaffoldPass());
+        pm.addPass(gawee::createLinalgVectorizationScaffoldPass());
+        pm.addPass(gawee::createLinalgVerificationScaffoldPass());
 
         // Step 3: Bufferization preparation slot
         pm.addPass(gawee::createGaweeBufferizePrepScaffoldPass());
@@ -97,6 +101,10 @@ int main(int argc, char **argv) {
 
         // Step 2: Linalg-level transform slot (tiling / scheduling / fusion)
         pm.addPass(gawee::createLinalgTransformScaffoldPass());
+        pm.addPass(gawee::createLinalgFusionScaffoldPass());
+        pm.addPass(gawee::createLinalgSchedulingScaffoldPass());
+        pm.addPass(gawee::createLinalgVectorizationScaffoldPass());
+        pm.addPass(gawee::createLinalgVerificationScaffoldPass());
 
         // Step 3: Convert tensor.empty to bufferization.alloc_tensor
         // (required for proper bufferization)
