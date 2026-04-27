@@ -47,6 +47,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include <cstdint>
 #include <limits>
+#include <optional>
 
 using namespace mlir;
 
@@ -77,15 +78,83 @@ static Value makeZeroValue(OpBuilder &builder, Location loc, Type type) {
   return arith::ConstantOp::create(builder, loc, type, builder.getZeroAttr(type));
 }
 
+static Value extractTensorScalarAsIndex(OpBuilder &builder, Location loc,
+                                        Value tensor, int64_t position);
+
+static Value createEmptyTensorFromSourceDims(OpBuilder &builder, Location loc,
+                                             RankedTensorType outputType,
+                                             Value source,
+                                             ArrayRef<int64_t> sourceDimMap = {}) {
+  SmallVector<Value> dynamicSizes;
+  dynamicSizes.reserve(outputType.getNumDynamicDims());
+  for (int64_t dim = 0; dim < outputType.getRank(); ++dim) {
+    if (!outputType.isDynamicDim(dim))
+      continue;
+    int64_t sourceDim = sourceDimMap.empty() ? dim : sourceDimMap[dim];
+    dynamicSizes.push_back(tensor::DimOp::create(builder, loc, source, sourceDim));
+  }
+  return tensor::EmptyOp::create(builder, loc, outputType.getShape(),
+                                 outputType.getElementType(), dynamicSizes);
+}
+
+static Value createEmptyTensorFromShapeTensor(OpBuilder &builder, Location loc,
+                                              RankedTensorType outputType,
+                                              Value shapeTensor) {
+  SmallVector<Value> dynamicSizes;
+  dynamicSizes.reserve(outputType.getNumDynamicDims());
+  for (int64_t dim = 0; dim < outputType.getRank(); ++dim) {
+    if (!outputType.isDynamicDim(dim))
+      continue;
+    dynamicSizes.push_back(
+        extractTensorScalarAsIndex(builder, loc, shapeTensor, dim));
+  }
+  return tensor::EmptyOp::create(builder, loc, outputType.getShape(),
+                                 outputType.getElementType(), dynamicSizes);
+}
+
+static AffineMap buildBroadcastMap(RankedTensorType inputType,
+                                   RankedTensorType outputType,
+                                   MLIRContext *ctx) {
+  int64_t outRank = outputType.getRank();
+  int64_t inRank = inputType.getRank();
+  if (inRank == 0)
+    return AffineMap::get(outRank, 0, {}, ctx);
+
+  SmallVector<AffineExpr> exprs;
+  exprs.reserve(inRank);
+  int64_t leading = outRank - inRank;
+  for (int64_t i = 0; i < inRank; ++i) {
+    int64_t outDim = leading + i;
+    if (!inputType.isDynamicDim(i) && inputType.getShape()[i] == 1 &&
+        (outputType.isDynamicDim(outDim) || outputType.getShape()[outDim] != 1)) {
+      exprs.push_back(getAffineConstantExpr(0, ctx));
+      continue;
+    }
+    exprs.push_back(getAffineDimExpr(outDim, ctx));
+  }
+  return AffineMap::get(outRank, 0, exprs, ctx);
+}
+
+static Value chooseShapeCarrier(Value preferred, Value fallback) {
+  auto preferredType = dyn_cast<RankedTensorType>(preferred.getType());
+  if (preferredType && preferredType.getRank() > 0)
+    return preferred;
+  return fallback;
+}
+
 static Value buildElementwiseBinaryGeneric(
     ConversionPatternRewriter &rewriter, Location loc, RankedTensorType outputType,
     Value lhs, Value rhs,
     function_ref<Value(OpBuilder &, Location, Value, Value)> bodyBuilder) {
-  Value output = tensor::EmptyOp::create(rewriter, loc, outputType.getShape(),
-                                         outputType.getElementType());
+  auto lhsType = mlir::cast<RankedTensorType>(lhs.getType());
+  auto rhsType = mlir::cast<RankedTensorType>(rhs.getType());
+  Value output = createEmptyTensorFromSourceDims(
+      rewriter, loc, outputType, chooseShapeCarrier(lhs, rhs));
   int64_t rank = outputType.getRank();
-  SmallVector<AffineMap> indexingMaps(
-      3, AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext()));
+  SmallVector<AffineMap> indexingMaps = {
+      buildBroadcastMap(lhsType, outputType, rewriter.getContext()),
+      buildBroadcastMap(rhsType, outputType, rewriter.getContext()),
+      AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext())};
   SmallVector<utils::IteratorType> iteratorTypes(
       rank, utils::IteratorType::parallel);
   auto genericOp = linalg::GenericOp::create(
@@ -136,6 +205,61 @@ static Value extractScalarTensorValue(OpBuilder &builder, Location loc, Value te
     return tensor::ExtractOp::create(builder, loc, tensor, ValueRange{zero});
   }
   return tensor;
+}
+
+static FailureOr<Value> expandReductionResultToKeepDims(
+    ConversionPatternRewriter &rewriter, Location loc, Value reduced,
+    RankedTensorType outputType, ArrayRef<int64_t> axes) {
+  auto reducedType = dyn_cast<RankedTensorType>(reduced.getType());
+  if (!reducedType)
+    return failure();
+
+  if (reducedType == outputType)
+    return reduced;
+
+  if (reducedType.getRank() == 0) {
+    if (!outputType.hasStaticShape())
+      return failure();
+    auto shapeType =
+        RankedTensorType::get({outputType.getRank()}, rewriter.getI64Type());
+    auto shapeAttr = DenseElementsAttr::get(
+        shapeType, ArrayRef<int64_t>(outputType.getShape().begin(),
+                                     outputType.getShape().end()));
+    Value shapeValue =
+        arith::ConstantOp::create(rewriter, loc, shapeType, shapeAttr);
+    return Value(
+        tensor::ReshapeOp::create(rewriter, loc, outputType, reduced, shapeValue));
+  }
+
+  llvm::SmallDenseSet<int64_t> reducedAxes;
+  for (int64_t axis : axes)
+    reducedAxes.insert(axis);
+
+  SmallVector<ReassociationIndices> reassociation;
+  reassociation.reserve(reducedType.getRank());
+  int64_t outDim = 0;
+  for (int64_t inDim = 0; inDim < reducedType.getRank(); ++inDim) {
+    ReassociationIndices group;
+
+    while (outDim < outputType.getRank() && reducedAxes.contains(outDim))
+      group.push_back(outDim++);
+
+    if (outDim >= outputType.getRank())
+      return failure();
+
+    group.push_back(outDim++);
+
+    while (outDim < outputType.getRank() && reducedAxes.contains(outDim))
+      group.push_back(outDim++);
+
+    reassociation.push_back(group);
+  }
+
+  if (outDim != outputType.getRank())
+    return failure();
+
+  return Value(tensor::ExpandShapeOp::create(rewriter, loc, outputType, reduced,
+                                             reassociation));
 }
 
 // -------------------------------------------------------------------------
@@ -253,11 +377,8 @@ struct ConvOpLowering : public OpConversionPattern<gawee::ConvOp> {
     }
 
     // Step 4: Create output tensor and initialize to zero
-    Value emptyTensor = tensor::EmptyOp::create(
-        rewriter, loc,
-        outputType.getShape(),
-        elementType
-    );
+    Value emptyTensor =
+        createEmptyTensorFromSourceDims(rewriter, loc, outputType, input);
     Value output = linalg::FillOp::create(rewriter, loc, zero, emptyTensor)
                        .getResult(0);
 
@@ -278,11 +399,8 @@ struct ConvOpLowering : public OpConversionPattern<gawee::ConvOp> {
     Value convResult = conv.getResults()[0];
     int64_t rank = outputType.getRank();
 
-    Value biasEmpty = tensor::EmptyOp::create(
-        rewriter, loc,
-        outputType.getShape(),
-        elementType
-    );
+    Value biasEmpty =
+        createEmptyTensorFromSourceDims(rewriter, loc, outputType, input);
 
     // Indexing maps:
     //   bias: (n, c, h, w) -> (c)       — broadcast across n, h, w
@@ -338,11 +456,8 @@ struct ReluOpLowering : public OpConversionPattern<gawee::ReluOp> {
     int64_t rank = inputType.getRank();
 
     // Step 2: Create output tensor (same shape as input)
-    Value output = tensor::EmptyOp::create(
-        rewriter, loc,
-        inputType.getShape(),
-        elementType
-    );
+    Value output =
+        createEmptyTensorFromSourceDims(rewriter, loc, inputType, input);
 
     // Step 3: Create indexing maps (identity maps for elementwise op)
     // note that, small vector is not a tensor but a container to convery information to MLIR framework. 
@@ -409,24 +524,16 @@ struct AddOpLowering : public OpConversionPattern<gawee::AddOp> {
     Value lhs = adaptor.getLhs();
     Value rhs = adaptor.getRhs();
 
-    // Step 2: Get output type and create empty output tensor
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
-    Value output = tensor::EmptyOp::create(
-        rewriter, loc,
-        outputType.getShape(),
-        outputType.getElementType()
-    );
-
-    // Step 3: Create linalg.add
-    auto addOp = linalg::AddOp::create(
-        rewriter, loc,
-        TypeRange{outputType},
-        ValueRange{lhs, rhs},  // ins
-        ValueRange{output}      // outs
-    );
-
-    // Step 4: Replace original op
-    rewriter.replaceOp(op, addOp.getResults());
+    Value result = buildElementwiseBinaryGeneric(
+        rewriter, loc, outputType, lhs, rhs,
+        [&](OpBuilder &builder, Location bodyLoc, Value lhsVal, Value rhsVal) {
+          auto lhsType = mlir::cast<RankedTensorType>(lhs.getType());
+          if (isa<FloatType>(lhsType.getElementType()))
+            return Value(arith::AddFOp::create(builder, bodyLoc, lhsVal, rhsVal));
+          return Value(arith::AddIOp::create(builder, bodyLoc, lhsVal, rhsVal));
+        });
+    rewriter.replaceOp(op, result);
 
     return success();
   }
@@ -770,9 +877,8 @@ struct LinearOpLowering : public OpConversionPattern<gawee::LinearOp> {
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
     auto elementType = outputType.getElementType();
 
-    Value emptyTensor = tensor::EmptyOp::create(
-        rewriter, loc, outputType.getShape(), elementType 
-    );
+    Value emptyTensor =
+        createEmptyTensorFromSourceDims(rewriter, loc, outputType, input);
 
     // it should generate ssa value by getResult. But constantOp is an exception
     Value zero = arith::ConstantOp::create(
@@ -793,9 +899,7 @@ struct LinearOpLowering : public OpConversionPattern<gawee::LinearOp> {
     int64_t rank = outputType.getRank();
 
     Value biasEmpty =
-        tensor::EmptyOp::create(rewriter, loc, outputType.getShape(),
-                                elementType
-    );
+        createEmptyTensorFromSourceDims(rewriter, loc, outputType, input);
 
     auto ctx = rewriter.getContext();
     // AffineMap defines object that has all information to calculate loop.  
@@ -864,7 +968,7 @@ struct BatchNormOpLowering : public OpConversionPattern<gawee::BatchNormOp> {
     auto inputType = mlir::cast<RankedTensorType>(input.getType());
     auto elementType = outputType.getElementType();
     Value output =
-        tensor::EmptyOp::create(rewriter, loc, outputType.getShape(), elementType);
+        createEmptyTensorFromSourceDims(rewriter, loc, outputType, input);
 
     auto ctx = rewriter.getContext();
     AffineMap identityMap = AffineMap::getMultiDimIdentityMap(4, ctx);
@@ -1054,25 +1158,14 @@ struct SubOpLowering : public OpConversionPattern<gawee::SubOp> {
     Value rhs = adaptor.getRhs();
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
     auto elementType = outputType.getElementType();
-    Value output =
-        tensor::EmptyOp::create(rewriter, loc, outputType.getShape(), elementType);
-    int64_t rank = outputType.getRank();
-    SmallVector<AffineMap> indexingMaps(
-        3, AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext()));
-    SmallVector<utils::IteratorType> iteratorTypes(
-        rank, utils::IteratorType::parallel);
-    auto genericOp = linalg::GenericOp::create(
-        rewriter, loc, TypeRange{outputType}, ValueRange{lhs, rhs},
-        ValueRange{output}, indexingMaps, iteratorTypes,
-        [&](OpBuilder &builder, Location loc, ValueRange args) {
-          Value result = isa<FloatType>(elementType)
-                             ? Value(arith::SubFOp::create(builder, loc, args[0],
-                                                           args[1]))
-                             : Value(arith::SubIOp::create(builder, loc, args[0],
-                                                           args[1]));
-          linalg::YieldOp::create(builder, loc, result);
+    Value result = buildElementwiseBinaryGeneric(
+        rewriter, loc, outputType, lhs, rhs,
+        [&](OpBuilder &builder, Location bodyLoc, Value lhsVal, Value rhsVal) {
+          if (isa<FloatType>(elementType))
+            return Value(arith::SubFOp::create(builder, bodyLoc, lhsVal, rhsVal));
+          return Value(arith::SubIOp::create(builder, bodyLoc, lhsVal, rhsVal));
         });
-    rewriter.replaceOp(op, genericOp.getResults());
+    rewriter.replaceOp(op, result);
     return success();
   }
 };
@@ -1087,25 +1180,14 @@ struct MulOpLowering : public OpConversionPattern<gawee::MulOp> {
     Value rhs = adaptor.getRhs();
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
     auto elementType = outputType.getElementType();
-    Value output =
-        tensor::EmptyOp::create(rewriter, loc, outputType.getShape(), elementType);
-    int64_t rank = outputType.getRank();
-    SmallVector<AffineMap> indexingMaps(
-        3, AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext()));
-    SmallVector<utils::IteratorType> iteratorTypes(
-        rank, utils::IteratorType::parallel);
-    auto genericOp = linalg::GenericOp::create(
-        rewriter, loc, TypeRange{outputType}, ValueRange{lhs, rhs},
-        ValueRange{output}, indexingMaps, iteratorTypes,
-        [&](OpBuilder &builder, Location loc, ValueRange args) {
-          Value result = isa<FloatType>(elementType)
-                             ? Value(arith::MulFOp::create(builder, loc, args[0],
-                                                           args[1]))
-                             : Value(arith::MulIOp::create(builder, loc, args[0],
-                                                           args[1]));
-          linalg::YieldOp::create(builder, loc, result);
+    Value result = buildElementwiseBinaryGeneric(
+        rewriter, loc, outputType, lhs, rhs,
+        [&](OpBuilder &builder, Location bodyLoc, Value lhsVal, Value rhsVal) {
+          if (isa<FloatType>(elementType))
+            return Value(arith::MulFOp::create(builder, bodyLoc, lhsVal, rhsVal));
+          return Value(arith::MulIOp::create(builder, bodyLoc, lhsVal, rhsVal));
         });
-    rewriter.replaceOp(op, genericOp.getResults());
+    rewriter.replaceOp(op, result);
     return success();
   }
 };
@@ -1120,25 +1202,14 @@ struct DivOpLowering : public OpConversionPattern<gawee::DivOp> {
     Value rhs = adaptor.getRhs();
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
     auto elementType = outputType.getElementType();
-    Value output =
-        tensor::EmptyOp::create(rewriter, loc, outputType.getShape(), elementType);
-    int64_t rank = outputType.getRank();
-    SmallVector<AffineMap> indexingMaps(
-        3, AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext()));
-    SmallVector<utils::IteratorType> iteratorTypes(
-        rank, utils::IteratorType::parallel);
-    auto genericOp = linalg::GenericOp::create(
-        rewriter, loc, TypeRange{outputType}, ValueRange{lhs, rhs},
-        ValueRange{output}, indexingMaps, iteratorTypes,
-        [&](OpBuilder &builder, Location loc, ValueRange args) {
-          Value result = isa<FloatType>(elementType)
-                             ? Value(arith::DivFOp::create(builder, loc, args[0],
-                                                           args[1]))
-                             : Value(arith::DivSIOp::create(builder, loc, args[0],
-                                                            args[1]));
-          linalg::YieldOp::create(builder, loc, result);
+    Value result = buildElementwiseBinaryGeneric(
+        rewriter, loc, outputType, lhs, rhs,
+        [&](OpBuilder &builder, Location bodyLoc, Value lhsVal, Value rhsVal) {
+          if (isa<FloatType>(elementType))
+            return Value(arith::DivFOp::create(builder, bodyLoc, lhsVal, rhsVal));
+          return Value(arith::DivSIOp::create(builder, bodyLoc, lhsVal, rhsVal));
         });
-    rewriter.replaceOp(op, genericOp.getResults());
+    rewriter.replaceOp(op, result);
     return success();
   }
 };
@@ -1154,14 +1225,29 @@ struct ReduceMeanOpLowering
     auto inputType = mlir::cast<RankedTensorType>(input.getType());
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
     auto elementType = outputType.getElementType();
+    bool keepDims = op.getKeepDims();
 
     SmallVector<int64_t> axes;
     for (int64_t axis : op.getAxes())
       axes.push_back(normalizeAxis(axis, inputType.getRank()));
+    llvm::sort(axes);
+
+    SmallVector<int64_t> reducedShape;
+    for (int64_t dim = 0; dim < inputType.getRank(); ++dim) {
+      if (!llvm::is_contained(axes, dim))
+        reducedShape.push_back(inputType.getShape()[dim]);
+    }
+    RankedTensorType reduceResultType =
+        RankedTensorType::get(reducedShape, elementType);
 
     Value zero = makeZeroValue(rewriter, loc, elementType);
-    Value emptyTensor = tensor::EmptyOp::create(
-        rewriter, loc, outputType.getShape(), elementType);
+    SmallVector<int64_t> keptInputDims;
+    for (int64_t dim = 0; dim < inputType.getRank(); ++dim) {
+      if (!llvm::is_contained(axes, dim))
+        keptInputDims.push_back(dim);
+    }
+    Value emptyTensor = createEmptyTensorFromSourceDims(
+        rewriter, loc, reduceResultType, input, keptInputDims);
     Value init = linalg::FillOp::create(rewriter, loc, zero, emptyTensor)
                      .getResult(0);
 
@@ -1180,10 +1266,22 @@ struct ReduceMeanOpLowering
         rewriter.getFloatAttr(elementType, static_cast<double>(count)));
 
     Value divResult = buildElementwiseBinaryGeneric(
-        rewriter, loc, outputType, reduceOp.getResult(0), reduceOp.getResult(0),
+        rewriter, loc, reduceResultType, reduceOp.getResult(0), reduceOp.getResult(0),
         [&](OpBuilder &builder, Location bodyLoc, Value lhs, Value) {
           return Value(arith::DivFOp::create(builder, bodyLoc, lhs, countVal));
         });
+
+    if (keepDims && reduceResultType != outputType) {
+      FailureOr<Value> expanded =
+          expandReductionResultToKeepDims(rewriter, loc, divResult, outputType, axes);
+      if (failed(expanded)) {
+        return rewriter.notifyMatchFailure(
+            op, "failed to expand reduce_mean result back to keepDims output");
+      }
+      rewriter.replaceOp(op, *expanded);
+      return success();
+    }
+
     rewriter.replaceOp(op, divResult);
     return success();
   }
@@ -1198,14 +1296,29 @@ struct ReduceSumOpLowering : public OpConversionPattern<gawee::ReduceSumOp> {
     Value input = adaptor.getInput();
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
     auto elementType = outputType.getElementType();
+    bool keepDims = op.getKeepDims();
     SmallVector<int64_t> axes;
     auto inputType = mlir::cast<RankedTensorType>(input.getType());
     for (int64_t axis : op.getAxes())
       axes.push_back(normalizeAxis(axis, inputType.getRank()));
+    llvm::sort(axes);
+
+    SmallVector<int64_t> reducedShape;
+    for (int64_t dim = 0; dim < inputType.getRank(); ++dim) {
+      if (!llvm::is_contained(axes, dim))
+        reducedShape.push_back(inputType.getShape()[dim]);
+    }
+    RankedTensorType reduceResultType =
+        RankedTensorType::get(reducedShape, elementType);
 
     Value zero = makeZeroValue(rewriter, loc, elementType);
-    Value emptyTensor = tensor::EmptyOp::create(
-        rewriter, loc, outputType.getShape(), elementType);
+    SmallVector<int64_t> keptInputDims;
+    for (int64_t dim = 0; dim < inputType.getRank(); ++dim) {
+      if (!llvm::is_contained(axes, dim))
+        keptInputDims.push_back(dim);
+    }
+    Value emptyTensor = createEmptyTensorFromSourceDims(
+        rewriter, loc, reduceResultType, input, keptInputDims);
     Value init = linalg::FillOp::create(rewriter, loc, zero, emptyTensor)
                      .getResult(0);
 
@@ -1215,6 +1328,17 @@ struct ReduceSumOpLowering : public OpConversionPattern<gawee::ReduceSumOp> {
           Value result = arith::AddFOp::create(builder, bodyLoc, args[0], args[1]);
           linalg::YieldOp::create(builder, bodyLoc, result);
         });
+
+    if (keepDims && reduceResultType != outputType) {
+      FailureOr<Value> expanded = expandReductionResultToKeepDims(
+          rewriter, loc, reduceOp.getResult(0), outputType, axes);
+      if (failed(expanded)) {
+        return rewriter.notifyMatchFailure(
+            op, "failed to expand reduce_sum result back to keepDims output");
+      }
+      rewriter.replaceOp(op, *expanded);
+      return success();
+    }
 
     rewriter.replaceOp(op, reduceOp.getResults());
     return success();
@@ -1226,10 +1350,25 @@ struct ReshapeOpLowering : public OpConversionPattern<gawee::ReshapeOp> {
   LogicalResult
   matchAndRewrite(gawee::ReshapeOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
     auto outputType = mlir::cast<TensorType>(op.getOutput().getType());
-    auto reshapeOp = tensor::ReshapeOp::create(rewriter, op.getLoc(), outputType,
-                                               adaptor.getInput(),
-                                               adaptor.getShape());
+    Value shape = adaptor.getShape();
+
+    if (auto rankedOutputType = mlir::dyn_cast<RankedTensorType>(outputType);
+        rankedOutputType && rankedOutputType.hasStaticShape()) {
+      SmallVector<Value> dims;
+      dims.reserve(rankedOutputType.getRank());
+      for (int64_t dim : rankedOutputType.getShape()) {
+        dims.push_back(arith::ConstantOp::create(
+            rewriter, loc, rewriter.getI64IntegerAttr(dim)));
+      }
+      auto normalizedShapeType =
+          RankedTensorType::get({rankedOutputType.getRank()}, rewriter.getI64Type());
+      shape = tensor::FromElementsOp::create(rewriter, loc, normalizedShapeType, dims);
+    }
+
+    auto reshapeOp = tensor::ReshapeOp::create(rewriter, loc, outputType,
+                                               adaptor.getInput(), shape);
     rewriter.replaceOp(op, reshapeOp.getResult());
     return success();
   }
@@ -1242,8 +1381,10 @@ struct TransposeOpLowering : public OpConversionPattern<gawee::TransposeOp> {
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
-    Value init = tensor::EmptyOp::create(
-        rewriter, loc, outputType.getShape(), outputType.getElementType());
+    SmallVector<int64_t> permDimMap(op.getPerm().begin(), op.getPerm().end());
+    Value init =
+        createEmptyTensorFromSourceDims(rewriter, loc, outputType, adaptor.getInput(),
+                                        permDimMap);
     auto transposeOp = linalg::TransposeOp::create(
         rewriter, loc, adaptor.getInput(), init, op.getPerm());
     rewriter.replaceOp(op, transposeOp.getResults());
@@ -1288,21 +1429,58 @@ struct UnsqueezeOpLowering : public OpConversionPattern<gawee::UnsqueezeOp> {
   matchAndRewrite(gawee::UnsqueezeOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Value input = adaptor.getInput();
+    auto inputType = mlir::cast<RankedTensorType>(input.getType());
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
+
+    if (inputType.getRank() == 0) {
+      if (!outputType.hasStaticShape()) {
+        return rewriter.notifyMatchFailure(
+            op, "scalar unsqueeze currently expects static output shape");
+      }
+      auto shapeType = RankedTensorType::get(
+          {outputType.getRank()}, rewriter.getI64Type());
+      auto shapeAttr = DenseElementsAttr::get(
+          shapeType, ArrayRef<int64_t>(outputType.getShape().begin(),
+                                       outputType.getShape().end()));
+      Value shapeValue =
+          arith::ConstantOp::create(rewriter, op.getLoc(), shapeType, shapeAttr);
+      Value reshaped = tensor::ReshapeOp::create(
+          rewriter, op.getLoc(), outputType, input, shapeValue);
+      rewriter.replaceOp(op, reshaped);
+      return success();
+    }
+
     llvm::SmallDenseSet<int64_t> axes;
     for (int64_t axis : op.getAxes())
       axes.insert(normalizeAxis(axis, outputType.getRank()));
 
     SmallVector<ReassociationIndices> reassociation;
-    ReassociationIndices current;
-    for (int64_t outDim = 0; outDim < outputType.getRank(); ++outDim) {
-      current.push_back(outDim);
-      bool nextIsInserted =
-          (outDim + 1 < outputType.getRank()) && axes.contains(outDim + 1);
-      if (!nextIsInserted) {
-        reassociation.push_back(current);
-        current.clear();
+    reassociation.reserve(inputType.getRank());
+    int64_t outDim = 0;
+    for (int64_t inDim = 0; inDim < inputType.getRank(); ++inDim) {
+      ReassociationIndices group;
+
+      while (outDim < outputType.getRank() && axes.contains(outDim)) {
+        group.push_back(outDim++);
       }
+
+      if (outDim >= outputType.getRank()) {
+        return rewriter.notifyMatchFailure(
+            op, "unsqueeze ran out of output dims while building reassociation");
+      }
+
+      group.push_back(outDim++);
+
+      while (outDim < outputType.getRank() && axes.contains(outDim)) {
+        group.push_back(outDim++);
+      }
+
+      reassociation.push_back(group);
+    }
+
+    if (outDim != outputType.getRank()) {
+      return rewriter.notifyMatchFailure(
+          op, "unsqueeze did not consume every output dimension");
     }
 
     auto unsqueezeOp = tensor::ExpandShapeOp::create(
@@ -1354,8 +1532,8 @@ struct SoftmaxOpLowering : public OpConversionPattern<gawee::SoftmaxOp> {
     Location loc = op.getLoc();
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
     int64_t axis = normalizeAxis(op.getAxis(), outputType.getRank());
-    Value output = tensor::EmptyOp::create(
-        rewriter, loc, outputType.getShape(), outputType.getElementType());
+    Value output =
+        createEmptyTensorFromSourceDims(rewriter, loc, outputType, adaptor.getInput());
     auto softmaxOp = linalg::SoftmaxOp::create(
         rewriter, loc, TypeRange{outputType}, adaptor.getInput(), output, axis);
     rewriter.replaceOp(op, softmaxOp.getResults());
@@ -1371,8 +1549,8 @@ struct SqrtOpLowering : public OpConversionPattern<gawee::SqrtOp> {
     Location loc = op.getLoc();
     Value input = adaptor.getInput();
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
-    Value output = tensor::EmptyOp::create(
-        rewriter, loc, outputType.getShape(), outputType.getElementType());
+    Value output =
+        createEmptyTensorFromSourceDims(rewriter, loc, outputType, input);
     int64_t rank = outputType.getRank();
     SmallVector<AffineMap> indexingMaps(
         2, AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext()));
@@ -1398,8 +1576,8 @@ struct TanhOpLowering : public OpConversionPattern<gawee::TanhOp> {
     Location loc = op.getLoc();
     Value input = adaptor.getInput();
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
-    Value output = tensor::EmptyOp::create(
-        rewriter, loc, outputType.getShape(), outputType.getElementType());
+    Value output =
+        createEmptyTensorFromSourceDims(rewriter, loc, outputType, input);
     int64_t rank = outputType.getRank();
     SmallVector<AffineMap> indexingMaps(
         2, AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext()));
@@ -1426,8 +1604,8 @@ struct SigmoidOpLowering : public OpConversionPattern<gawee::SigmoidOp> {
     Value input = adaptor.getInput();
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
     auto elementType = outputType.getElementType();
-    Value output = tensor::EmptyOp::create(
-        rewriter, loc, outputType.getShape(), elementType);
+    Value output =
+        createEmptyTensorFromSourceDims(rewriter, loc, outputType, input);
     int64_t rank = outputType.getRank();
     SmallVector<AffineMap> indexingMaps(
         2, AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext()));
@@ -1460,8 +1638,8 @@ struct HardSigmoidOpLowering
     Value input = adaptor.getInput();
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
     auto elementType = outputType.getElementType();
-    Value output = tensor::EmptyOp::create(
-        rewriter, loc, outputType.getShape(), elementType);
+    Value output =
+        createEmptyTensorFromSourceDims(rewriter, loc, outputType, input);
     int64_t rank = outputType.getRank();
     SmallVector<AffineMap> indexingMaps(
         2, AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext()));
@@ -1501,8 +1679,8 @@ struct HardSwishOpLowering : public OpConversionPattern<gawee::HardSwishOp> {
     Value input = adaptor.getInput();
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
     auto elementType = outputType.getElementType();
-    Value output = tensor::EmptyOp::create(
-        rewriter, loc, outputType.getShape(), elementType);
+    Value output =
+        createEmptyTensorFromSourceDims(rewriter, loc, outputType, input);
     int64_t rank = outputType.getRank();
     SmallVector<AffineMap> indexingMaps(
         2, AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext()));
@@ -1541,8 +1719,8 @@ struct LeakyReluOpLowering : public OpConversionPattern<gawee::LeakyReluOp> {
     Value input = adaptor.getInput();
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
     auto elementType = outputType.getElementType();
-    Value output = tensor::EmptyOp::create(
-        rewriter, loc, outputType.getShape(), elementType);
+    Value output =
+        createEmptyTensorFromSourceDims(rewriter, loc, outputType, input);
     int64_t rank = outputType.getRank();
     SmallVector<AffineMap> indexingMaps(
         2, AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext()));
@@ -1615,8 +1793,8 @@ struct ErfOpLowering : public OpConversionPattern<gawee::ErfOp> {
     Location loc = op.getLoc();
     Value input = adaptor.getInput();
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
-    Value output = tensor::EmptyOp::create(
-        rewriter, loc, outputType.getShape(), outputType.getElementType());
+    Value output =
+        createEmptyTensorFromSourceDims(rewriter, loc, outputType, input);
     int64_t rank = outputType.getRank();
     SmallVector<AffineMap> indexingMaps(
         2, AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext()));
@@ -1644,11 +1822,15 @@ struct EqualOpLowering : public OpConversionPattern<gawee::EqualOp> {
     Value rhs = adaptor.getRhs();
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
     auto lhsType = mlir::cast<RankedTensorType>(lhs.getType());
-    Value output = tensor::EmptyOp::create(
-        rewriter, loc, outputType.getShape(), outputType.getElementType());
+    Value output =
+        createEmptyTensorFromSourceDims(rewriter, loc, outputType,
+                                        chooseShapeCarrier(lhs, rhs));
     int64_t rank = outputType.getRank();
-    SmallVector<AffineMap> indexingMaps(
-        3, AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext()));
+    SmallVector<AffineMap> indexingMaps = {
+        buildBroadcastMap(lhsType, outputType, rewriter.getContext()),
+        buildBroadcastMap(mlir::cast<RankedTensorType>(rhs.getType()), outputType,
+                          rewriter.getContext()),
+        AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext())};
     SmallVector<utils::IteratorType> iteratorTypes(
         rank, utils::IteratorType::parallel);
     auto genericOp = linalg::GenericOp::create(
@@ -1680,11 +1862,18 @@ struct WhereOpLowering : public OpConversionPattern<gawee::WhereOp> {
     Value lhs = adaptor.getLhs();
     Value rhs = adaptor.getRhs();
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
-    Value output = tensor::EmptyOp::create(
-        rewriter, loc, outputType.getShape(), outputType.getElementType());
+    Value output =
+        createEmptyTensorFromSourceDims(
+            rewriter, loc, outputType, chooseShapeCarrier(lhs, rhs));
     int64_t rank = outputType.getRank();
-    SmallVector<AffineMap> indexingMaps(
-        4, AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext()));
+    SmallVector<AffineMap> indexingMaps = {
+        buildBroadcastMap(mlir::cast<RankedTensorType>(condition.getType()),
+                          outputType, rewriter.getContext()),
+        buildBroadcastMap(mlir::cast<RankedTensorType>(lhs.getType()), outputType,
+                          rewriter.getContext()),
+        buildBroadcastMap(mlir::cast<RankedTensorType>(rhs.getType()), outputType,
+                          rewriter.getContext()),
+        AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext())};
     SmallVector<utils::IteratorType> iteratorTypes(
         rank, utils::IteratorType::parallel);
     auto genericOp = linalg::GenericOp::create(
@@ -1753,8 +1942,8 @@ struct ExpandOpLowering : public OpConversionPattern<gawee::ExpandOp> {
     Value input = adaptor.getInput();
     auto inputType = mlir::cast<RankedTensorType>(input.getType());
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
-    Value output = tensor::EmptyOp::create(
-        rewriter, loc, outputType.getShape(), outputType.getElementType());
+    Value output = createEmptyTensorFromShapeTensor(
+        rewriter, loc, outputType, adaptor.getShape());
 
     MLIRContext *ctx = rewriter.getContext();
     SmallVector<AffineExpr> inputExprs;
@@ -1789,14 +1978,13 @@ struct SliceOpLowering : public OpConversionPattern<gawee::SliceOp> {
   LogicalResult
   matchAndRewrite(gawee::SliceOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto maybeStarts = getConstantI64Tensor(adaptor.getStarts());
-    auto maybeEnds = getConstantI64Tensor(adaptor.getEnds());
     auto maybeAxes = getConstantI64Tensor(adaptor.getAxes());
     auto maybeSteps = getConstantI64Tensor(adaptor.getSteps());
-    if (failed(maybeStarts) || failed(maybeEnds) || failed(maybeAxes) ||
-        failed(maybeSteps)) {
+    auto maybeStarts = getConstantI64Tensor(adaptor.getStarts());
+    auto maybeEnds = getConstantI64Tensor(adaptor.getEnds());
+    if (failed(maybeAxes) || failed(maybeSteps)) {
       return rewriter.notifyMatchFailure(
-          op, "slice lowering currently expects constant starts/ends/axes/steps");
+          op, "slice lowering currently expects constant axes/steps");
     }
 
     Value input = adaptor.getInput();
@@ -1804,25 +1992,106 @@ struct SliceOpLowering : public OpConversionPattern<gawee::SliceOp> {
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
     int64_t rank = inputType.getRank();
 
-    SmallVector<int64_t> offsets(rank, 0);
-    SmallVector<int64_t> sizes(outputType.getShape().begin(),
-                               outputType.getShape().end());
-    SmallVector<int64_t> strides(rank, 1);
+    SmallVector<OpFoldResult> offsets;
+    SmallVector<OpFoldResult> sizes;
+    SmallVector<OpFoldResult> strides;
+    offsets.reserve(rank);
+    sizes.reserve(rank);
+    strides.reserve(rank);
+
+    for (int64_t dim = 0; dim < rank; ++dim) {
+      offsets.push_back(rewriter.getIndexAttr(0));
+      strides.push_back(rewriter.getIndexAttr(1));
+      if (!outputType.isDynamicDim(dim)) {
+        sizes.push_back(rewriter.getIndexAttr(outputType.getShape()[dim]));
+        continue;
+      }
+      if (!inputType.isDynamicDim(dim)) {
+        sizes.push_back(rewriter.getIndexAttr(inputType.getShape()[dim]));
+        continue;
+      }
+      Value dimValue = tensor::DimOp::create(rewriter, op.getLoc(), input, dim);
+      sizes.push_back(dimValue);
+    }
 
     for (size_t i = 0; i < maybeAxes->size(); ++i) {
       int64_t axis = normalizeAxis((*maybeAxes)[i], rank);
-      int64_t start = (*maybeStarts)[i];
       int64_t step = (*maybeSteps)[i];
-      if (start < 0)
-        start += inputType.getShape()[axis];
-      offsets[axis] = start;
-      strides[axis] = step;
+      if (step <= 0) {
+        return rewriter.notifyMatchFailure(
+            op, "slice lowering currently supports only positive steps");
+      }
+
+      std::optional<int64_t> constStart;
+      if (succeeded(maybeStarts) && i < maybeStarts->size())
+        constStart = (*maybeStarts)[i];
+      std::optional<int64_t> constEnd;
+      if (succeeded(maybeEnds) && i < maybeEnds->size())
+        constEnd = (*maybeEnds)[i];
+
+      Value dynamicStart;
+      if (!constStart.has_value())
+        dynamicStart =
+            extractTensorScalarAsIndex(rewriter, op.getLoc(), adaptor.getStarts(), i);
+      Value dynamicEnd;
+      if (!constEnd.has_value())
+        dynamicEnd =
+            extractTensorScalarAsIndex(rewriter, op.getLoc(), adaptor.getEnds(), i);
+
+      if (constStart.has_value() && *constStart < 0) {
+        if (inputType.isDynamicDim(axis)) {
+          return rewriter.notifyMatchFailure(
+              op, "negative slice start on dynamic dim is not supported yet");
+        }
+        *constStart += inputType.getShape()[axis];
+      }
+      if (constEnd.has_value() && *constEnd < 0) {
+        if (inputType.isDynamicDim(axis)) {
+          return rewriter.notifyMatchFailure(
+              op, "negative slice end on dynamic dim is not supported yet");
+        }
+        *constEnd += inputType.getShape()[axis];
+      }
+
+      offsets[axis] = constStart.has_value()
+                          ? OpFoldResult(rewriter.getIndexAttr(*constStart))
+                          : OpFoldResult(dynamicStart);
+      strides[axis] = rewriter.getIndexAttr(step);
+
+      if (!outputType.isDynamicDim(axis)) {
+        sizes[axis] = rewriter.getIndexAttr(outputType.getShape()[axis]);
+        continue;
+      }
+
+      if (step != 1) {
+        return rewriter.notifyMatchFailure(
+            op, "dynamic slice sizes currently require step == 1");
+      }
+
+      if (constStart.has_value() && constEnd.has_value()) {
+        sizes[axis] = rewriter.getIndexAttr(*constEnd - *constStart);
+        continue;
+      }
+
+      Value startValue = constStart.has_value()
+                             ? arith::ConstantOp::create(rewriter, op.getLoc(),
+                                                         rewriter.getIndexAttr(*constStart))
+                             : dynamicStart;
+      Value endValue = constEnd.has_value()
+                           ? arith::ConstantOp::create(rewriter, op.getLoc(),
+                                                       rewriter.getIndexAttr(*constEnd))
+                           : dynamicEnd;
+      Value sizeValue =
+          arith::SubIOp::create(rewriter, op.getLoc(), endValue, startValue);
+      sizes[axis] = sizeValue;
     }
 
     auto sliceOp = tensor::ExtractSliceOp::create(
-        rewriter, op.getLoc(), outputType, input, ValueRange{}, ValueRange{},
-        ValueRange{}, offsets, sizes, strides);
-    rewriter.replaceOp(op, sliceOp.getResult());
+        rewriter, op.getLoc(), input, offsets, sizes, strides);
+    Value result = sliceOp.getResult();
+    if (result.getType() != outputType)
+      result = tensor::CastOp::create(rewriter, op.getLoc(), outputType, result);
+    rewriter.replaceOp(op, result);
     return success();
   }
 };
@@ -1885,8 +2154,8 @@ struct CastOpLowering : public OpConversionPattern<gawee::CastOp> {
       return success();
     }
 
-    Value output = tensor::EmptyOp::create(
-        rewriter, loc, outputType.getShape(), dstElem);
+    Value output =
+        createEmptyTensorFromSourceDims(rewriter, loc, outputType, input);
     int64_t rank = outputType.getRank();
     SmallVector<AffineMap> indexingMaps(
         2, AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext()));

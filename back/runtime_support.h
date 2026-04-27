@@ -23,8 +23,8 @@ struct MemRefDescriptor {
   T *allocated;
   T *aligned;
   int64_t offset;
-  std::array<int64_t, Rank> sizes;
-  std::array<int64_t, Rank> strides;
+  int64_t sizes[Rank];
+  int64_t strides[Rank];
 };
 
 template <typename T>
@@ -191,8 +191,13 @@ TensorBuffer<T> loadNpy(const std::filesystem::path &path,
   if (info.dtypeTag != expectedDtype) {
     throw std::runtime_error("NPY dtype does not match requested tensor type");
   }
-  if (shape != expectedShape) {
-    throw std::runtime_error("Input tensor shape mismatch for " + path.string());
+  if (shape.size() != expectedShape.size()) {
+    throw std::runtime_error("Input tensor rank mismatch for " + path.string());
+  }
+  for (size_t i = 0; i < shape.size(); ++i) {
+    if (expectedShape[i] >= 0 && shape[i] != expectedShape[i]) {
+      throw std::runtime_error("Input tensor shape mismatch for " + path.string());
+    }
   }
 
   std::ifstream in(path, std::ios::binary);
@@ -264,7 +269,7 @@ void saveNpy(const std::filesystem::path &path, const std::vector<int64_t> &shap
 template <typename T, size_t Rank>
 void saveReturnedMemRef(const std::filesystem::path &path,
                         const MemRefDescriptor<T, Rank> &desc) {
-  std::vector<int64_t> shape(desc.sizes.begin(), desc.sizes.end());
+  std::vector<int64_t> shape(desc.sizes, desc.sizes + Rank);
   saveNpy(path, shape, desc.aligned + desc.offset);
 }
 
