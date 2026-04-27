@@ -19,6 +19,7 @@
 #include "Conversion/GaweePasses.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/SmallString.h"
@@ -28,10 +29,25 @@ using namespace mlir;
 namespace {
 
 static void analyzeLoopSchedulingNeeds(ModuleOp module) {
+  Builder builder(module.getContext());
   module.walk([&](linalg::LinalgOp op) {
     auto iteratorTypes = op.getIteratorTypesArray();
     int64_t parallelCount = 0;
     int64_t reductionCount = 0;
+    SmallVector<int64_t> parallelLoops;
+    SmallVector<int64_t> reductionLoops;
+    SmallVector<int64_t> interchange;
+    interchange.reserve(iteratorTypes.size());
+
+    for (int64_t i = 0, e = iteratorTypes.size(); i < e; ++i) {
+      if (iteratorTypes[i] == utils::IteratorType::parallel)
+        parallelLoops.push_back(i);
+      if (iteratorTypes[i] == utils::IteratorType::reduction)
+        reductionLoops.push_back(i);
+    }
+    interchange.append(parallelLoops.begin(), parallelLoops.end());
+    interchange.append(reductionLoops.begin(), reductionLoops.end());
+
     for (utils::IteratorType iteratorType : iteratorTypes) {
       if (iteratorType == utils::IteratorType::parallel)
         ++parallelCount;
@@ -47,6 +63,17 @@ static void analyzeLoopSchedulingNeeds(ModuleOp module) {
       os << ", reduction ordering likely matters";
     else
       os << ", loop reorder/parallel split is the likely next lever";
+
+    op->setAttr("gawee.schedule.parallel_loops",
+                builder.getDenseI64ArrayAttr(parallelLoops));
+    op->setAttr("gawee.schedule.reduction_loops",
+                builder.getDenseI64ArrayAttr(reductionLoops));
+    op->setAttr("gawee.schedule.interchange",
+                builder.getDenseI64ArrayAttr(interchange));
+    op->setAttr(
+        "gawee.schedule.kind",
+        builder.getStringAttr(reductionCount > 0 ? "reduction-aware"
+                                                 : "parallel-first"));
     op->emitRemark() << os.str();
   });
 }

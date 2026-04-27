@@ -43,6 +43,7 @@
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Utils/StructuredOpsUtils.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Diagnostics.h"
@@ -159,6 +160,27 @@ static void appendText(SmallString<128> &buffer, StringRef text) {
 
 static void emitPlanRemark(Operation *op, StringRef header, StringRef details) {
   op->emitRemark() << header << ": " << details;
+}
+
+static StringAttr makeStringAttr(Operation *op, StringRef text) {
+  return StringAttr::get(op->getContext(), text);
+}
+
+static void setPlanMetadata(Operation *op, StringRef kind,
+                            TransformPriority priority,
+                            ArrayRef<int64_t> tileSizes) {
+  Builder builder(op->getContext());
+  op->setAttr("gawee.transform.kind", makeStringAttr(op, kind));
+  op->setAttr("gawee.transform.priority",
+              makeStringAttr(op, stringifyPriority(priority)));
+  if (!tileSizes.empty()) {
+    op->setAttr("gawee.transform.tile_sizes",
+                builder.getDenseI64ArrayAttr(tileSizes));
+  }
+}
+
+static void setPlanNote(Operation *op, StringRef attrName, StringRef text) {
+  op->setAttr(attrName, makeStringAttr(op, text));
 }
 
 static bool isElementwiseGenericHeuristic(linalg::GenericOp genericOp) {
@@ -360,6 +382,15 @@ static void describeConvPlan(const ConvTilingPlan &plan) {
      << ", tileChannelLoop=" << (plan.tileChannelLoop ? "true" : "false")
      << ", rationale=\"" << plan.rationale << "\"";
   emitPlanRemark(plan.operation, "conv tiling scaffold", os.str());
+  setPlanMetadata(plan.operation, "conv", plan.priority,
+                  plan.parallelTileSizes);
+  plan.operation->setAttr(
+      "gawee.transform.tile_spatial",
+      BoolAttr::get(plan.operation->getContext(), plan.tileOutputSpatialLoops));
+  plan.operation->setAttr(
+      "gawee.transform.tile_channel",
+      BoolAttr::get(plan.operation->getContext(), plan.tileChannelLoop));
+  setPlanNote(plan.operation, "gawee.transform.rationale", plan.rationale);
 }
 
 static void describeMatmulPlan(const MatmulTilingPlan &plan) {
@@ -371,6 +402,11 @@ static void describeMatmulPlan(const MatmulTilingPlan &plan) {
      << (plan.tileReductionLoop ? "true" : "false")
      << ", rationale=\"" << plan.rationale << "\"";
   emitPlanRemark(plan.operation, "matmul tiling scaffold", os.str());
+  setPlanMetadata(plan.operation, "matmul", plan.priority, plan.tileSizes);
+  plan.operation->setAttr(
+      "gawee.transform.tile_reduction",
+      BoolAttr::get(plan.operation->getContext(), plan.tileReductionLoop));
+  setPlanNote(plan.operation, "gawee.transform.rationale", plan.rationale);
 }
 
 static void describeGenericPlan(const GenericTransformPlan &plan) {
@@ -382,6 +418,17 @@ static void describeGenericPlan(const GenericTransformPlan &plan) {
      << ", worthFusion=" << (plan.worthFusion ? "true" : "false")
      << ", rationale=\"" << plan.rationale << "\"";
   emitPlanRemark(plan.operation, "generic scheduling scaffold", os.str());
+  setPlanMetadata(plan.operation, "generic", plan.priority, {});
+  plan.operation->setAttr(
+      "gawee.transform.elementwise",
+      BoolAttr::get(plan.operation->getContext(), plan.isElementwise));
+  plan.operation->setAttr(
+      "gawee.transform.has_reduction",
+      BoolAttr::get(plan.operation->getContext(), plan.hasReduction));
+  plan.operation->setAttr(
+      "gawee.transform.worth_fusion",
+      BoolAttr::get(plan.operation->getContext(), plan.worthFusion));
+  setPlanNote(plan.operation, "gawee.transform.rationale", plan.rationale);
 }
 
 static void tileConvLikeOps(ModuleOp module) {
@@ -460,6 +507,13 @@ static void summarizeModule(ModuleOp module) {
   module.emitRemark() << "linalg transform scaffold summary: conv=" << convCount
                       << ", matmul=" << matmulCount
                       << ", generic=" << genericCount;
+  Builder builder(module.getContext());
+  module->setAttr("gawee.transform.conv_count",
+                  builder.getI64IntegerAttr(convCount));
+  module->setAttr("gawee.transform.matmul_count",
+                  builder.getI64IntegerAttr(matmulCount));
+  module->setAttr("gawee.transform.generic_count",
+                  builder.getI64IntegerAttr(genericCount));
 }
 
 struct LinalgTransformScaffoldPass

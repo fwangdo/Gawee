@@ -91,7 +91,8 @@ This file tracks what you need to study and practice.
   - legalization/lowering: implemented
   - bufferization pipeline: wired
   - end-to-end AOT execution: wired
-  - optimization passes: scaffold stage
+  - optimization passes: implemented as heuristic planning / annotation passes
+  - pre-bufferization cleanup: implemented for `tensor.empty` and no-op `tensor.cast`
 
 ---
 
@@ -139,21 +140,41 @@ This file tracks what you need to study and practice.
 - Step 1: `Gawee -> Linalg` legalization
 - Step 2: tiling scaffold pass
   - current scaffold: `lib/Conversion/LinalgTransformScaffold.cpp`
+  - current implementation:
+    - inspect conv / matmul / generic families
+    - choose tile-size hints
+    - attach explicit `gawee.transform.*` attrs
   - intended ownership: tiling decisions before loop lowering
 - Step 3: fusion scaffold pass
   - current scaffold: `lib/Conversion/LinalgFusionScaffold.cpp`
+  - current implementation:
+    - detect simple single-use producer/consumer pairs
+    - attach `gawee.fusion.group` / role attrs
   - intended ownership: producer/consumer fusion and post-op fusion planning
 - Step 4: scheduling scaffold pass
   - current scaffold: `lib/Conversion/LinalgSchedulingScaffold.cpp`
+  - current implementation:
+    - count parallel vs reduction loops
+    - attach loop-interchange and scheduling-hint attrs
   - intended ownership: loop order / parallel / reduction scheduling decisions
 - Step 5: vectorization scaffold pass
   - current scaffold: `lib/Conversion/LinalgVectorizationScaffold.cpp`
+  - current implementation:
+    - attach vectorization kind + width hints
+    - record static-result readiness
   - intended ownership: vectorization readiness and vector-lowering preparation
 - Step 6: verification scaffold pass
   - current scaffold: `lib/Conversion/LinalgVerificationScaffold.cpp`
+  - current implementation:
+    - summarize linalg coverage at module level
+    - mark per-op verification status attrs
   - intended ownership: transform precondition checks and IR-side verification hooks
 - Step 7: bufferization preparation
   - current scaffold: `lib/Conversion/BufferizePrepScaffold.cpp`
+  - current implementation:
+    - replace `tensor.empty` with `bufferization.alloc_tensor`
+    - fold no-op `tensor.cast`
+    - attach destination-style bufferization attrs
   - intended ownership: pre-bufferization cleanup and normalization
 - Step 8: one-shot bufferization (`tensor -> memref`)
 - Step 9: `Linalg(memref) -> SCF`
@@ -161,11 +182,11 @@ This file tracks what you need to study and practice.
 
 ### Middle-end Completion Direction
 - To honestly say "I covered the middle-end broadly", target this sequence:
-  1. replace tiling scaffold with real conv/matmul tiling
-  2. replace fusion scaffold with at least one real producer-consumer fusion path
-  3. replace scheduling scaffold with at least one concrete loop reorder / parallel choice
-  4. replace vectorization scaffold with a real vector-friendly lowering step
-  5. connect verification scaffold to correctness/latency experiments in `back/`
+  1. replace attr-level tiling hints with real conv/matmul tiling rewrites
+  2. replace fusion grouping attrs with at least one real producer-consumer fusion rewrite
+  3. replace scheduling hints with at least one concrete loop reorder / parallel choice
+  4. replace vectorization hints with a real vector-friendly lowering step
+  5. connect verification attrs to correctness/latency experiments in `back/`
 - In other words:
   - "lowering works" is the starting point
   - "performance transforms + verification loop work" is the fuller middle-end story

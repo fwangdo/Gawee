@@ -18,6 +18,7 @@
 #include "Conversion/GaweePasses.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 
@@ -26,9 +27,11 @@ using namespace mlir;
 namespace {
 
 static void emitVerificationSummary(ModuleOp module) {
+  Builder builder(module.getContext());
   int64_t linalgCount = 0;
   int64_t genericCount = 0;
   int64_t structuredCount = 0;
+  int64_t plannedCount = 0;
 
   module.walk([&](linalg::LinalgOp op) {
     ++linalgCount;
@@ -36,25 +39,46 @@ static void emitVerificationSummary(ModuleOp module) {
       ++genericCount;
     else
       ++structuredCount;
+    if (op->hasAttr("gawee.transform.kind"))
+      ++plannedCount;
   });
 
   module.emitRemark() << "verification scaffold summary: linalg_ops="
                       << linalgCount << ", generic_ops=" << genericCount
-                      << ", structured_ops=" << structuredCount;
+                      << ", structured_ops=" << structuredCount
+                      << ", planned_ops=" << plannedCount;
+  module->setAttr("gawee.verify.linalg_count",
+                  builder.getI64IntegerAttr(linalgCount));
+  module->setAttr("gawee.verify.planned_count",
+                  builder.getI64IntegerAttr(plannedCount));
 }
 
 static void verifyPerOpExpectations(ModuleOp module) {
+  Builder builder(module.getContext());
   module.walk([&](linalg::LinalgOp op) {
+    bool hasTransformPlan = op->hasAttr("gawee.transform.kind");
+    bool hasSchedule = op->hasAttr("gawee.schedule.kind");
+    bool hasVectorInfo = op->hasAttr("gawee.vector.kind");
+    op->setAttr("gawee.verify.has_transform_plan",
+                builder.getBoolAttr(hasTransformPlan));
+    op->setAttr("gawee.verify.has_schedule",
+                builder.getBoolAttr(hasSchedule));
+    op->setAttr("gawee.verify.has_vector_info",
+                builder.getBoolAttr(hasVectorInfo));
+
     if (op.getNumDpsInits() == 0) {
       op.emitRemark()
           << "verification scaffold: op has no destination operands; "
              "check whether destination style expectations still hold";
+      op->setAttr("gawee.verify.status",
+                  builder.getStringAttr("needs-dps-review"));
       return;
     }
 
     op.emitRemark()
         << "verification scaffold: destination-style op is present for later "
            "bufferization/perf checks";
+    op->setAttr("gawee.verify.status", builder.getStringAttr("ok"));
   });
 }
 
