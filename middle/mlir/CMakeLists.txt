@@ -135,6 +135,10 @@ target_link_libraries(GaweeDialect
 add_library(GaweeConversion
   lib/Conversion/GaweeToLinalg.cpp
   lib/Conversion/LinalgTransformScaffold.cpp
+  lib/Conversion/LinalgFusionScaffold.cpp
+  lib/Conversion/LinalgSchedulingScaffold.cpp
+  lib/Conversion/LinalgVectorizationScaffold.cpp
+  lib/Conversion/LinalgVerificationScaffold.cpp
   lib/Conversion/BufferizePrepScaffold.cpp
 )
 

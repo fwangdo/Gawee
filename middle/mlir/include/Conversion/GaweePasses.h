@@ -11,6 +11,10 @@ namespace mlir::gawee {
 
 std::unique_ptr<Pass> createGaweeToLinalgPass();
 std::unique_ptr<Pass> createLinalgTransformScaffoldPass();
+std::unique_ptr<Pass> createLinalgFusionScaffoldPass();
+std::unique_ptr<Pass> createLinalgSchedulingScaffoldPass();
+std::unique_ptr<Pass> createLinalgVectorizationScaffoldPass();
+std::unique_ptr<Pass> createLinalgVerificationScaffoldPass();
 std::unique_ptr<Pass> createGaweeBufferizePrepScaffoldPass();
 
 } // namespace mlir::gawee

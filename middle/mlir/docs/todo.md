@@ -79,6 +79,20 @@ This file tracks what you need to study and practice.
 - There is now an explicit middle slot for `Linalg`-level transforms
 - Typical work in that slot: tiling, fusion, scheduling, vectorization prep
 
+### Direction After Lowering
+- Saying "I experienced AI compiler middle-end broadly" now requires more than legalization and bufferization
+- The missing center of gravity is optimization-oriented middle-end work:
+  - real tiling
+  - real fusion
+  - real scheduling
+  - real vectorization prep / vector lowering
+  - correctness + latency verification loop
+- Current codebase status:
+  - legalization/lowering: implemented
+  - bufferization pipeline: wired
+  - end-to-end AOT execution: wired
+  - optimization passes: scaffold stage
+
 ---
 
 ## Phase 6: JSON → Gawee MLIR (Translator) 🔄 CURRENT
@@ -123,15 +137,38 @@ This file tracks what you need to study and practice.
 
 ### Updated Mental Model
 - Step 1: `Gawee -> Linalg` legalization
-- Step 2: `Linalg` transform pass
+- Step 2: tiling scaffold pass
   - current scaffold: `lib/Conversion/LinalgTransformScaffold.cpp`
-  - intended ownership: tiling / fusion / scheduling before bufferization
-- Step 3: bufferization preparation
+  - intended ownership: tiling decisions before loop lowering
+- Step 3: fusion scaffold pass
+  - current scaffold: `lib/Conversion/LinalgFusionScaffold.cpp`
+  - intended ownership: producer/consumer fusion and post-op fusion planning
+- Step 4: scheduling scaffold pass
+  - current scaffold: `lib/Conversion/LinalgSchedulingScaffold.cpp`
+  - intended ownership: loop order / parallel / reduction scheduling decisions
+- Step 5: vectorization scaffold pass
+  - current scaffold: `lib/Conversion/LinalgVectorizationScaffold.cpp`
+  - intended ownership: vectorization readiness and vector-lowering preparation
+- Step 6: verification scaffold pass
+  - current scaffold: `lib/Conversion/LinalgVerificationScaffold.cpp`
+  - intended ownership: transform precondition checks and IR-side verification hooks
+- Step 7: bufferization preparation
   - current scaffold: `lib/Conversion/BufferizePrepScaffold.cpp`
   - intended ownership: pre-bufferization cleanup and normalization
-- Step 4: one-shot bufferization (`tensor -> memref`)
-- Step 5: `Linalg(memref) -> SCF`
-- Step 6: `SCF -> CF -> LLVM`
+- Step 8: one-shot bufferization (`tensor -> memref`)
+- Step 9: `Linalg(memref) -> SCF`
+- Step 10: `SCF -> CF -> LLVM`
+
+### Middle-end Completion Direction
+- To honestly say "I covered the middle-end broadly", target this sequence:
+  1. replace tiling scaffold with real conv/matmul tiling
+  2. replace fusion scaffold with at least one real producer-consumer fusion path
+  3. replace scheduling scaffold with at least one concrete loop reorder / parallel choice
+  4. replace vectorization scaffold with a real vector-friendly lowering step
+  5. connect verification scaffold to correctness/latency experiments in `back/`
+- In other words:
+  - "lowering works" is the starting point
+  - "performance transforms + verification loop work" is the fuller middle-end story
 
 ---
 
