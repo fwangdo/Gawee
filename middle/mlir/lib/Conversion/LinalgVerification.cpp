@@ -1,5 +1,5 @@
 //===----------------------------------------------------------------------===//
-// Linalg Verification Scaffold Pass
+// Linalg Verification Pass
 //===----------------------------------------------------------------------===//
 //
 // This pass is the intended home for middle-end verification hooks.
@@ -43,7 +43,7 @@ static void emitVerificationSummary(ModuleOp module) {
       ++plannedCount;
   });
 
-  module.emitRemark() << "verification scaffold summary: linalg_ops="
+  module.emitRemark() << "verification summary: linalg_ops="
                       << linalgCount << ", generic_ops=" << genericCount
                       << ", structured_ops=" << structuredCount
                       << ", planned_ops=" << plannedCount;
@@ -68,7 +68,7 @@ static void verifyPerOpExpectations(ModuleOp module) {
 
     if (op.getNumDpsInits() == 0) {
       op.emitRemark()
-          << "verification scaffold: op has no destination operands; "
+          << "verification: op has no destination operands; "
              "check whether destination style expectations still hold";
       op->setAttr("gawee.verify.status",
                   builder.getStringAttr("needs-dps-review"));
@@ -76,21 +76,21 @@ static void verifyPerOpExpectations(ModuleOp module) {
     }
 
     op.emitRemark()
-        << "verification scaffold: destination-style op is present for later "
+        << "verification: destination-style op is present for later "
            "bufferization/perf checks";
     op->setAttr("gawee.verify.status", builder.getStringAttr("ok"));
   });
 }
 
-struct LinalgVerificationScaffoldPass
-    : public PassWrapper<LinalgVerificationScaffoldPass,
+struct LinalgVerificationPass
+    : public PassWrapper<LinalgVerificationPass,
                          OperationPass<ModuleOp>> {
   StringRef getArgument() const override {
     return "gawee-linalg-verification";
   }
 
   StringRef getDescription() const override {
-    return "Scaffold pass for post-lowering Linalg verification hooks";
+    return "Post-lowering Linalg verification pass";
   }
 
   void getDependentDialects(DialectRegistry &registry) const override {
@@ -107,7 +107,7 @@ struct LinalgVerificationScaffoldPass
 } // namespace
 
 namespace mlir::gawee {
-std::unique_ptr<Pass> createLinalgVerificationScaffoldPass() {
-  return std::make_unique<LinalgVerificationScaffoldPass>();
+std::unique_ptr<Pass> createLinalgVerificationPass() {
+  return std::make_unique<LinalgVerificationPass>();
 }
 } // namespace mlir::gawee

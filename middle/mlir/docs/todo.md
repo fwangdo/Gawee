@@ -138,39 +138,39 @@ This file tracks what you need to study and practice.
 
 ### Updated Mental Model
 - Step 1: `Gawee -> Linalg` legalization
-- Step 2: tiling scaffold pass
-  - current scaffold: `lib/Conversion/LinalgTransformScaffold.cpp`
+- Step 2: tiling pass
+  - current file: `lib/Conversion/LinalgTransform.cpp`
   - current implementation:
     - inspect conv / matmul / generic families
     - choose tile-size hints
     - attach explicit `gawee.transform.*` attrs
   - intended ownership: tiling decisions before loop lowering
-- Step 3: fusion scaffold pass
-  - current scaffold: `lib/Conversion/LinalgFusionScaffold.cpp`
+- Step 3: fusion pass
+  - current file: `lib/Conversion/LinalgFusion.cpp`
   - current implementation:
     - detect simple single-use producer/consumer pairs
     - attach `gawee.fusion.group` / role attrs
   - intended ownership: producer/consumer fusion and post-op fusion planning
-- Step 4: scheduling scaffold pass
-  - current scaffold: `lib/Conversion/LinalgSchedulingScaffold.cpp`
+- Step 4: scheduling pass
+  - current file: `lib/Conversion/LinalgScheduling.cpp`
   - current implementation:
     - count parallel vs reduction loops
     - attach loop-interchange and scheduling-hint attrs
   - intended ownership: loop order / parallel / reduction scheduling decisions
-- Step 5: vectorization scaffold pass
-  - current scaffold: `lib/Conversion/LinalgVectorizationScaffold.cpp`
+- Step 5: vectorization pass
+  - current file: `lib/Conversion/LinalgVectorization.cpp`
   - current implementation:
     - attach vectorization kind + width hints
     - record static-result readiness
   - intended ownership: vectorization readiness and vector-lowering preparation
-- Step 6: verification scaffold pass
-  - current scaffold: `lib/Conversion/LinalgVerificationScaffold.cpp`
+- Step 6: verification pass
+  - current file: `lib/Conversion/LinalgVerification.cpp`
   - current implementation:
     - summarize linalg coverage at module level
     - mark per-op verification status attrs
   - intended ownership: transform precondition checks and IR-side verification hooks
 - Step 7: bufferization preparation
-  - current scaffold: `lib/Conversion/BufferizePrepScaffold.cpp`
+  - current file: `lib/Conversion/BufferizePrep.cpp`
   - current implementation:
     - replace `tensor.empty` with `bufferization.alloc_tensor`
     - fold no-op `tensor.cast`

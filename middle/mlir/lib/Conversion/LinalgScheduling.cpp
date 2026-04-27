@@ -1,5 +1,5 @@
 //===----------------------------------------------------------------------===//
-// Linalg Scheduling Scaffold Pass
+// Linalg Scheduling Pass
 //===----------------------------------------------------------------------===//
 //
 // This pass is the intended home for loop/order decisions that should happen
@@ -57,7 +57,7 @@ static void analyzeLoopSchedulingNeeds(ModuleOp module) {
 
     SmallString<128> message;
     llvm::raw_svector_ostream os(message);
-    os << "scheduling scaffold: parallel_loops=" << parallelCount
+    os << "scheduling plan: parallel_loops=" << parallelCount
        << ", reduction_loops=" << reductionCount;
     if (reductionCount > 0)
       os << ", reduction ordering likely matters";
@@ -78,13 +78,13 @@ static void analyzeLoopSchedulingNeeds(ModuleOp module) {
   });
 }
 
-struct LinalgSchedulingScaffoldPass
-    : public PassWrapper<LinalgSchedulingScaffoldPass,
+struct LinalgSchedulingPass
+    : public PassWrapper<LinalgSchedulingPass,
                          OperationPass<ModuleOp>> {
   StringRef getArgument() const override { return "gawee-linalg-scheduling"; }
 
   StringRef getDescription() const override {
-    return "Scaffold pass for post-lowering Linalg scheduling planning";
+    return "Post-lowering Linalg scheduling planning pass";
   }
 
   void getDependentDialects(DialectRegistry &registry) const override {
@@ -99,7 +99,7 @@ struct LinalgSchedulingScaffoldPass
 } // namespace
 
 namespace mlir::gawee {
-std::unique_ptr<Pass> createLinalgSchedulingScaffoldPass() {
-  return std::make_unique<LinalgSchedulingScaffoldPass>();
+std::unique_ptr<Pass> createLinalgSchedulingPass() {
+  return std::make_unique<LinalgSchedulingPass>();
 }
 } // namespace mlir::gawee

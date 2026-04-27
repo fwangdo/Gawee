@@ -1,5 +1,5 @@
 //===----------------------------------------------------------------------===//
-// Linalg Fusion Scaffold Pass
+// Linalg Fusion Pass
 //===----------------------------------------------------------------------===//
 //
 // This pass is the intended home for producer/consumer fusion work that should
@@ -73,7 +73,7 @@ static void analyzeProducerConsumerChains(ModuleOp module) {
 
     SmallString<128> message;
     llvm::raw_svector_ostream os(message);
-    os << "fusion scaffold candidate";
+    os << "fusion candidate";
 
     if (isConvOrMatmul(op))
       os << ": structured producer with likely post-op fusion opportunities";
@@ -110,12 +110,12 @@ static void analyzeProducerConsumerChains(ModuleOp module) {
                   builder.getI64IntegerAttr(nextGroupId));
 }
 
-struct LinalgFusionScaffoldPass
-    : public PassWrapper<LinalgFusionScaffoldPass, OperationPass<ModuleOp>> {
+struct LinalgFusionPass
+    : public PassWrapper<LinalgFusionPass, OperationPass<ModuleOp>> {
   StringRef getArgument() const override { return "gawee-linalg-fusion"; }
 
   StringRef getDescription() const override {
-    return "Scaffold pass for post-lowering Linalg fusion planning";
+    return "Post-lowering Linalg fusion planning pass";
   }
 
   void getDependentDialects(DialectRegistry &registry) const override {
@@ -137,7 +137,7 @@ struct LinalgFusionScaffoldPass
 } // namespace
 
 namespace mlir::gawee {
-std::unique_ptr<Pass> createLinalgFusionScaffoldPass() {
-  return std::make_unique<LinalgFusionScaffoldPass>();
+std::unique_ptr<Pass> createLinalgFusionPass() {
+  return std::make_unique<LinalgFusionPass>();
 }
 } // namespace mlir::gawee

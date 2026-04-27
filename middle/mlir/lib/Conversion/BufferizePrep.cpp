@@ -1,5 +1,5 @@
 //===----------------------------------------------------------------------===//
-// Bufferization Prep Scaffold Pass
+// Bufferization Prep Pass
 //===----------------------------------------------------------------------===//
 //
 // This pass is the intended home for transformations that should happen
@@ -75,12 +75,12 @@ static void annotateDestinationStyleOps(ModuleOp module) {
   });
 }
 
-struct BufferizePrepScaffoldPass
-    : public PassWrapper<BufferizePrepScaffoldPass, OperationPass<ModuleOp>> {
+struct BufferizePrepPass
+    : public PassWrapper<BufferizePrepPass, OperationPass<ModuleOp>> {
   StringRef getArgument() const override { return "gawee-bufferize-prep"; }
 
   StringRef getDescription() const override {
-    return "Scaffold pass for pre-bufferization cleanup and normalization";
+    return "Pre-bufferization cleanup and normalization pass";
   }
 
   void getDependentDialects(DialectRegistry &registry) const override {
@@ -107,7 +107,7 @@ struct BufferizePrepScaffoldPass
 } // namespace
 
 namespace mlir::gawee {
-std::unique_ptr<Pass> createGaweeBufferizePrepScaffoldPass() {
-  return std::make_unique<BufferizePrepScaffoldPass>();
+std::unique_ptr<Pass> createGaweeBufferizePrepPass() {
+  return std::make_unique<BufferizePrepPass>();
 }
 } // namespace mlir::gawee

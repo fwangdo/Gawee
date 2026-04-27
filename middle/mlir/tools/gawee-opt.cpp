@@ -73,14 +73,14 @@ int main(int argc, char **argv) {
         pm.addPass(gawee::createGaweeToLinalgPass());
 
         // Step 2: Linalg-level transform slot (tiling / scheduling / fusion)
-        pm.addPass(gawee::createLinalgTransformScaffoldPass());
-        pm.addPass(gawee::createLinalgFusionScaffoldPass());
-        pm.addPass(gawee::createLinalgSchedulingScaffoldPass());
-        pm.addPass(gawee::createLinalgVectorizationScaffoldPass());
-        pm.addPass(gawee::createLinalgVerificationScaffoldPass());
+        pm.addPass(gawee::createLinalgTransformPass());
+        pm.addPass(gawee::createLinalgFusionPass());
+        pm.addPass(gawee::createLinalgSchedulingPass());
+        pm.addPass(gawee::createLinalgVectorizationPass());
+        pm.addPass(gawee::createLinalgVerificationPass());
 
         // Step 3: Bufferization preparation slot
-        pm.addPass(gawee::createGaweeBufferizePrepScaffoldPass());
+        pm.addPass(gawee::createGaweeBufferizePrepPass());
 
         // Step 4: Bufferize (tensor -> memref)
         bufferization::OneShotBufferizePassOptions bufOpts;
@@ -100,18 +100,18 @@ int main(int argc, char **argv) {
         pm.addPass(gawee::createGaweeToLinalgPass());
 
         // Step 2: Linalg-level transform slot (tiling / scheduling / fusion)
-        pm.addPass(gawee::createLinalgTransformScaffoldPass());
-        pm.addPass(gawee::createLinalgFusionScaffoldPass());
-        pm.addPass(gawee::createLinalgSchedulingScaffoldPass());
-        pm.addPass(gawee::createLinalgVectorizationScaffoldPass());
-        pm.addPass(gawee::createLinalgVerificationScaffoldPass());
+        pm.addPass(gawee::createLinalgTransformPass());
+        pm.addPass(gawee::createLinalgFusionPass());
+        pm.addPass(gawee::createLinalgSchedulingPass());
+        pm.addPass(gawee::createLinalgVectorizationPass());
+        pm.addPass(gawee::createLinalgVerificationPass());
 
         // Step 3: Convert tensor.empty to bufferization.alloc_tensor
         // (required for proper bufferization)
         pm.addPass(bufferization::createEmptyTensorToAllocTensorPass());
 
         // Step 4: Bufferization preparation slot
-        pm.addPass(gawee::createGaweeBufferizePrepScaffoldPass());
+        pm.addPass(gawee::createGaweeBufferizePrepPass());
 
         // Step 5: Bufferize (tensor -> memref)
         bufferization::OneShotBufferizePassOptions bufOpts;

@@ -1,5 +1,5 @@
 //===----------------------------------------------------------------------===//
-// Linalg Vectorization Scaffold Pass
+// Linalg Vectorization Pass
 //===----------------------------------------------------------------------===//
 //
 // This pass is the intended home for vectorization preparation work.
@@ -58,7 +58,7 @@ static void analyzeVectorizationReadiness(ModuleOp module) {
   module.walk([&](linalg::LinalgOp op) {
     SmallString<128> message;
     llvm::raw_svector_ostream os(message);
-    os << "vectorization scaffold: ";
+    os << "vectorization plan: ";
     int64_t widthHint = chooseVectorWidthHint(op);
     if (hasStaticTensorResult(op.getOperation()))
       os << "static result shape available";
@@ -85,15 +85,15 @@ static void analyzeVectorizationReadiness(ModuleOp module) {
   });
 }
 
-struct LinalgVectorizationScaffoldPass
-    : public PassWrapper<LinalgVectorizationScaffoldPass,
+struct LinalgVectorizationPass
+    : public PassWrapper<LinalgVectorizationPass,
                          OperationPass<ModuleOp>> {
   StringRef getArgument() const override {
     return "gawee-linalg-vectorization";
   }
 
   StringRef getDescription() const override {
-    return "Scaffold pass for post-lowering Linalg vectorization planning";
+    return "Post-lowering Linalg vectorization planning pass";
   }
 
   void getDependentDialects(DialectRegistry &registry) const override {
@@ -108,7 +108,7 @@ struct LinalgVectorizationScaffoldPass
 } // namespace
 
 namespace mlir::gawee {
-std::unique_ptr<Pass> createLinalgVectorizationScaffoldPass() {
-  return std::make_unique<LinalgVectorizationScaffoldPass>();
+std::unique_ptr<Pass> createLinalgVectorizationPass() {
+  return std::make_unique<LinalgVectorizationPass>();
 }
 } // namespace mlir::gawee

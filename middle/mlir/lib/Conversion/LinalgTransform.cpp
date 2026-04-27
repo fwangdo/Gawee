@@ -1,5 +1,5 @@
 //===----------------------------------------------------------------------===//
-// Linalg Transform Scaffold Pass
+// Linalg Transform Pass
 //===----------------------------------------------------------------------===//
 //
 // This pass is the intended home for middle-end transforms that operate after
@@ -66,7 +66,7 @@ namespace {
 //   - matmul: usually care about M/N/K tiles
 //   - generic: may be elementwise, may be reduction, may be a poor target
 //
-// A practical first scaffold is:
+// A practical first implementation is:
 //   1. collect candidate ops
 //   2. inspect their shapes / iterator types
 //   3. build an explicit "plan" object
@@ -191,7 +191,7 @@ static bool isElementwiseGenericHeuristic(linalg::GenericOp genericOp) {
     return false;
   }
 
-  // This scaffold uses a deliberately simple heuristic:
+  // This pass uses a deliberately simple heuristic:
   // if every loop is parallel and all indexing maps are projected
   // permutations, then this generic op behaves like a plain elementwise op
   // for middle-end planning purposes.
@@ -219,7 +219,7 @@ static ConvTilingPlan buildConvPlan(linalg::LinalgOp linalgOp) {
       buildUnitTileVector(linalgOp.getNumParallelLoops());
 
   appendText(plan.rationale,
-             "Start with unit tiles so the scaffold is always valid.");
+             "Start with unit tiles so the pass is always valid.");
 
   auto maybeResultType = getSingleResultTensorType(linalgOp.getOperation());
   if (failed(maybeResultType)) {
@@ -245,7 +245,7 @@ static ConvTilingPlan buildConvPlan(linalg::LinalgOp linalgOp) {
     plan.priority = TransformPriority::High;
 
     // The loop order for the named Linalg conv op is not "tensor rank order"
-    // by accident; it is chosen by the op definition. This scaffold keeps the
+    // by accident; it is chosen by the op definition. This pass keeps the
     // decision simple:
     //   - leave batch and channel loops as 1 for now
     //   - tile output H/W loops if they are statically known
@@ -381,7 +381,7 @@ static void describeConvPlan(const ConvTilingPlan &plan) {
      << (plan.tileOutputSpatialLoops ? "true" : "false")
      << ", tileChannelLoop=" << (plan.tileChannelLoop ? "true" : "false")
      << ", rationale=\"" << plan.rationale << "\"";
-  emitPlanRemark(plan.operation, "conv tiling scaffold", os.str());
+  emitPlanRemark(plan.operation, "conv tiling plan", os.str());
   setPlanMetadata(plan.operation, "conv", plan.priority,
                   plan.parallelTileSizes);
   plan.operation->setAttr(
@@ -401,7 +401,7 @@ static void describeMatmulPlan(const MatmulTilingPlan &plan) {
      << ", tileReductionLoop="
      << (plan.tileReductionLoop ? "true" : "false")
      << ", rationale=\"" << plan.rationale << "\"";
-  emitPlanRemark(plan.operation, "matmul tiling scaffold", os.str());
+  emitPlanRemark(plan.operation, "matmul tiling plan", os.str());
   setPlanMetadata(plan.operation, "matmul", plan.priority, plan.tileSizes);
   plan.operation->setAttr(
       "gawee.transform.tile_reduction",
@@ -417,7 +417,7 @@ static void describeGenericPlan(const GenericTransformPlan &plan) {
      << ", hasReduction=" << (plan.hasReduction ? "true" : "false")
      << ", worthFusion=" << (plan.worthFusion ? "true" : "false")
      << ", rationale=\"" << plan.rationale << "\"";
-  emitPlanRemark(plan.operation, "generic scheduling scaffold", os.str());
+  emitPlanRemark(plan.operation, "generic scheduling plan", os.str());
   setPlanMetadata(plan.operation, "generic", plan.priority, {});
   plan.operation->setAttr(
       "gawee.transform.elementwise",
@@ -504,7 +504,7 @@ static void summarizeModule(ModuleOp module) {
     }
   });
 
-  module.emitRemark() << "linalg transform scaffold summary: conv=" << convCount
+  module.emitRemark() << "linalg transform summary: conv=" << convCount
                       << ", matmul=" << matmulCount
                       << ", generic=" << genericCount;
   Builder builder(module.getContext());
@@ -516,12 +516,12 @@ static void summarizeModule(ModuleOp module) {
                   builder.getI64IntegerAttr(genericCount));
 }
 
-struct LinalgTransformScaffoldPass
-    : public PassWrapper<LinalgTransformScaffoldPass, OperationPass<ModuleOp>> {
+struct LinalgTransformPass
+    : public PassWrapper<LinalgTransformPass, OperationPass<ModuleOp>> {
   StringRef getArgument() const override { return "gawee-linalg-transform"; }
 
   StringRef getDescription() const override {
-    return "Scaffold pass for post-lowering Linalg tiling/scheduling transforms";
+    return "Post-lowering Linalg tiling and scheduling planning pass";
   }
 
   void getDependentDialects(DialectRegistry &registry) const override {
@@ -561,7 +561,7 @@ struct LinalgTransformScaffoldPass
 } // namespace
 
 namespace mlir::gawee {
-std::unique_ptr<Pass> createLinalgTransformScaffoldPass() {
-  return std::make_unique<LinalgTransformScaffoldPass>();
+std::unique_ptr<Pass> createLinalgTransformPass() {
+  return std::make_unique<LinalgTransformPass>();
 }
 } // namespace mlir::gawee
