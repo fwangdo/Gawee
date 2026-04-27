@@ -74,9 +74,9 @@ std::vector<std::string> splitTopLevelCommaList(const std::string &text) {
 
 TensorTypeSpec parseMemRefType(const std::string &text) {
   std::smatch match;
-  std::regex pattern(R"(memref<([0-9x]+)x([a-z0-9]+)>)");
+  std::regex pattern(R"(memref<([0-9\?x]+)x([a-z0-9]+)(?:,[^>]*)?>)");
   if (!std::regex_search(text, match, pattern)) {
-    throw std::runtime_error("Only static memref types are supported: " + text);
+    throw std::runtime_error("Could not parse memref type: " + text);
   }
 
   TensorTypeSpec spec;
@@ -84,6 +84,10 @@ TensorTypeSpec parseMemRefType(const std::string &text) {
   spec.dtype = match[2].str();
   auto dims = splitTopLevelCommaList(std::regex_replace(shapePart, std::regex("x"), ","));
   for (const auto &dim : dims) {
+    if (dim == "?") {
+      spec.shape.push_back(-1);
+      continue;
+    }
     spec.shape.push_back(std::stoll(dim));
   }
   return spec;
@@ -161,24 +165,21 @@ std::string emitShapeList(const std::vector<int64_t> &shape) {
 
 std::string emitFunctionPrototype(const FuncSignature &sig) {
   std::ostringstream out;
+  out << "extern \"C\" void _mlir_ciface_" << sig.entry << "(";
+  bool first = true;
   if (sig.returns.empty()) {
-    out << "extern \"C\" void " << sig.entry << "(";
+    first = true;
   } else if (sig.returns.size() == 1) {
-    out << "extern \"C\" " << descriptorType(sig.returns[0]) << " " << sig.entry
-        << "(";
+    out << descriptorType(sig.returns[0]) << " *";
+    first = false;
   } else {
     throw std::runtime_error("Multiple return values are not supported yet");
   }
-
-  bool first = true;
   for (const auto &arg : sig.args) {
     size_t rank = arg.shape.size();
     if (!first) out << ", ";
-    out << cppScalarType(arg.dtype) << " *";
-    out << ", " << cppScalarType(arg.dtype) << " *";
-    out << ", int64_t";
-    for (size_t i = 0; i < rank; ++i) out << ", int64_t";
-    for (size_t i = 0; i < rank; ++i) out << ", int64_t";
+    (void)rank;
+    out << descriptorType(arg) << " *";
     first = false;
   }
   out << ");\n";
@@ -227,22 +228,18 @@ std::string emitLauncher(const FuncSignature &sig, int numOutputArgs) {
         << ">(arg" << i << "Tensor);\n";
   }
 
-  out << "  ";
   if (!sig.returns.empty()) {
-    out << "auto result = ";
+    out << "  " << descriptorType(sig.returns[0]) << " result{};\n";
   }
-  out << sig.entry << "(";
+  out << "  _mlir_ciface_" << sig.entry << "(";
   bool first = true;
+  if (!sig.returns.empty()) {
+    out << "&result";
+    first = false;
+  }
   for (size_t i = 0; i < sig.args.size(); ++i) {
     if (!first) out << ", ";
-    out << "arg" << i << "Desc.allocated, arg" << i << "Desc.aligned, arg" << i
-        << "Desc.offset";
-    for (size_t dim = 0; dim < sig.args[i].shape.size(); ++dim) {
-      out << ", arg" << i << "Desc.sizes[" << dim << "]";
-    }
-    for (size_t dim = 0; dim < sig.args[i].shape.size(); ++dim) {
-      out << ", arg" << i << "Desc.strides[" << dim << "]";
-    }
+    out << "&arg" << i << "Desc";
     first = false;
   }
   out << ");\n";
@@ -307,10 +304,22 @@ void buildExecutable(const fs::path &abiSource,
 
   fs::path llvmIr = translateIfNeeded(loweredInput, llvmBin);
   fs::create_directories(output.parent_path());
+  fs::path llc = llvmBin / "llc";
+  if (!fs::exists(llc))
+    throw std::runtime_error("Could not find llc in " + llvmBin.string());
+  fs::path loweredObj = fs::temp_directory_path() / "gawee_aot_lowered.o";
+
+  std::ostringstream llcCmd;
+  llcCmd << llc.string() << " -filetype=obj " << llvmIr.string() << " -o "
+         << loweredObj.string();
+  runChecked(llcCmd.str());
 
   std::ostringstream cmd;
   cmd << "/usr/bin/clang++ -std=c++17 -O2 -I" << fs::absolute("back").string()
-      << " " << launcherPath.string() << " " << llvmIr.string()
+      << " " << launcherPath.string() << " " << loweredObj.string()
+      << " -L" << (llvmBin.parent_path() / "lib").string()
+      << " -Wl,-rpath," << (llvmBin.parent_path() / "lib").string()
+      << " -lmlir_c_runner_utils -lmlir_runner_utils"
       << " -o " << output.string();
   runChecked(cmd.str());
 }

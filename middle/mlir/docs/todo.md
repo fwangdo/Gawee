@@ -191,6 +191,30 @@ This file tracks what you need to study and practice.
   - "lowering works" is the starting point
   - "performance transforms + verification loop work" is the fuller middle-end story
 
+### Current Backend Status
+- `resnet18`
+  - `gawee-to-loops`: passes
+  - `gawee-to-llvm`: passes
+  - AOT runner build: passes
+  - AOT runner execution: passes
+  - output shape now matches ONNX Runtime: `(1, 1000)`
+  - current correctness gap still exists:
+    - `max_abs_diff ~= 1.57`
+    - `np.allclose(..., atol=1e-4, rtol=1e-4)` fails
+  - current latency baseline:
+    - Gawee AOT end-to-end runner: about `6.46s ~ 6.52s`
+    - ONNX Runtime inference-only: about `19.6ms ~ 31.1ms`
+  - interpretation:
+    - the backend execution path is now closed
+    - the result is not numerically aligned yet
+    - the current AOT latency includes file I/O and process launch, so it is only a coarse baseline
+- `bert_tiny`, `distilbert_base_uncased`
+  - translator and several dynamic lowering blockers were improved
+  - but end-to-end LLVM/AOT/correctness are not closed yet
+  - next focus:
+    - dynamic shape + broadcast cleanup
+    - slice/reduce/reshape correctness under bufferization
+
 ---
 
 ## Phase 8: Extension (Your Own Work)

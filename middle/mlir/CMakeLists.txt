@@ -189,6 +189,8 @@ target_link_libraries(gawee-opt
   MLIRBufferizationTransforms
   # LLVM dialect and conversions (Phase 7)
   MLIRLLVMDialect
+  MLIRLLVMIRTransforms
+  MLIRAffineToStandard
   MLIRArithToLLVM
   MLIRControlFlowToLLVM
   MLIRFuncToLLVM
