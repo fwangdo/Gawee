@@ -189,7 +189,10 @@ TensorBuffer<T> loadNpy(const std::filesystem::path &path,
   std::vector<int64_t> shape = info.shape;
   std::string expectedDtype = dtypeTag<T>();
   if (info.dtypeTag != expectedDtype) {
-    throw std::runtime_error("NPY dtype does not match requested tensor type");
+    throw std::runtime_error(
+        "NPY dtype does not match requested tensor type: file=" +
+        path.string() + " got='" + info.dtypeTag + "' expected='" +
+        expectedDtype + "'");
   }
   if (shape.size() != expectedShape.size()) {
     throw std::runtime_error("Input tensor rank mismatch for " + path.string());

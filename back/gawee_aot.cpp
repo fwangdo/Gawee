@@ -74,21 +74,29 @@ std::vector<std::string> splitTopLevelCommaList(const std::string &text) {
 
 TensorTypeSpec parseMemRefType(const std::string &text) {
   std::smatch match;
-  std::regex pattern(R"(memref<([0-9\?x]+)x([a-z0-9]+)(?:,[^>]*)?>)");
-  if (!std::regex_search(text, match, pattern)) {
-    throw std::runtime_error("Could not parse memref type: " + text);
-  }
+  // Ranked memref: memref<1x128xf32, ...>
+  std::regex ranked(R"(memref<([0-9\?x]+)x([a-z0-9]+)(?:,[^>]*)?>)");
+  // Scalar (rank-0) memref: memref<f32, ...> or memref<f32>
+  std::regex scalar(R"(memref<([a-z0-9]+)(?:,[^>]*)?>)");
 
   TensorTypeSpec spec;
-  std::string shapePart = match[1].str();
-  spec.dtype = match[2].str();
-  auto dims = splitTopLevelCommaList(std::regex_replace(shapePart, std::regex("x"), ","));
-  for (const auto &dim : dims) {
-    if (dim == "?") {
-      spec.shape.push_back(-1);
-      continue;
+  if (std::regex_search(text, match, ranked)) {
+    std::string shapePart = match[1].str();
+    spec.dtype = match[2].str();
+    auto dims = splitTopLevelCommaList(
+        std::regex_replace(shapePart, std::regex("x"), ","));
+    for (const auto &dim : dims) {
+      if (dim == "?") {
+        spec.shape.push_back(-1);
+        continue;
+      }
+      spec.shape.push_back(std::stoll(dim));
     }
-    spec.shape.push_back(std::stoll(dim));
+  } else if (std::regex_search(text, match, scalar)) {
+    spec.dtype = match[1].str();
+    // shape stays empty → rank-0 scalar
+  } else {
+    throw std::runtime_error("Could not parse memref type: " + text);
   }
   return spec;
 }
@@ -319,7 +327,7 @@ void buildExecutable(const fs::path &abiSource,
       << " " << launcherPath.string() << " " << loweredObj.string()
       << " -L" << (llvmBin.parent_path() / "lib").string()
       << " -Wl,-rpath," << (llvmBin.parent_path() / "lib").string()
-      << " -lmlir_c_runner_utils -lmlir_runner_utils"
+      << " -lmlir_c_runner_utils -lmlir_runner_utils -lm"
       << " -o " << output.string();
   runChecked(cmd.str());
 }
