@@ -2,41 +2,47 @@
 
 [![한국어](https://img.shields.io/badge/lang-한국어-blue)](README.ko.md)
 
-A deep learning compiler project that converts PyTorch models into a custom IR, performs graph analysis and optimization, and lowers through an MLIR-based middle-end pipeline (Linalg → SCF → LLVM IR). Designed to tackle real-world problems found in production DL compilers (e.g., TVM).
+A deep learning compiler that takes ONNX models, rewrites and optimizes the graph, and lowers through an MLIR-based pipeline (Gawee Dialect → Linalg → SCF → LLVM IR) to produce AOT-compiled native executables.
 
 ---
 
 ## Target Models
 
-- **ResNet-18**
-  - Based on the standard ImageNet ResNet-18 architecture.
-  - Goal: reduce graph nodes by fusing Conv / BatchNorm.
-- **UNet**
-  - Based on the standard ImageNet UNet architecture.
-  - Goal: eliminate redundant Identity ops and removable Python ops (e.g., getitem, getattr).
-- [Usage & Evaluation](docs/usage.md)
+| Model | Frontend | MLIR Lowering | AOT Build | Correctness |
+| --- | --- | --- | --- | --- |
+| ResNet-18 | pass | pass | pass | pass (max_abs ≈ 3e-6) |
+| bert_tiny | pass | pass | pass | WIP (numerical) |
+| distilbert_base_uncased | pass | pass | pass | WIP (numerical) |
+
+NLP models require static shape binding (batch=1, seq_len=128) before translation.
 
 ---
 
 ## Pipeline
 
 ```
-PyTorch Model → FX Graph → Gawee IR → JSON → MLIR(Gawee Dialect) → Linalg → SCF → LLVM
+ONNX Model → Rewrite/Optimize → MLIR (Gawee Dialect) → Linalg → SCF → LLVM IR → Native Binary
 ```
 
 ### Frontend (Python)
 
-- Parse torch fx graph into Gawee IR
-- Measure baseline cost using predefined costs
-- Optimize using passes defined in Gawee IR
-- Export IR as JSON
+- Load ONNX models and apply graph-level rewrites (op fusion, constant folding)
+- Spec-driven rewrite system with per-op correctness validation
+- Export rewritten ONNX for downstream translation
 
 ### Middle-end (C++ / MLIR)
 
-- Convert JSON graph to MLIR Gawee Dialect (MLIREmitter)
+- Translate ONNX directly to MLIR Gawee Dialect (`gawee-onnx-translate`)
 - Gawee Dialect → Linalg Dialect conversion (GaweeToLinalg)
-- Multi-stage lowering: Linalg → Bufferization → SCF loops → LLVM Dialect
-- Two CLI tools: `gawee-opt`, `gawee-translate`
+- Decompose aggregated ops (e.g. linalg.softmax) into primitive linalg.generic
+- Multi-stage lowering: Linalg → Bufferization → SCF loops → Math/LLVM Dialect
+- CLI tools: `gawee-opt`, `gawee-onnx-translate`
+
+### Backend (C++)
+
+- AOT compilation: LLVM IR → native executable via `gawee-aot`
+- Automatic launcher code generation from MLIR function signatures
+- Correctness validation against ONNX Runtime (`eval_priority_models.py`)
 
 ---
 
@@ -89,14 +95,14 @@ Custom MLIR Dialect for DL ops defined using TableGen.
 
 ---
 
-### 5. JSON → MLIR Conversion (MLIREmitter)
+### 5. ONNX → MLIR Conversion (ONNXMLIREmitter)
 
-Converts the frontend JSON graph to MLIR Gawee Dialect ops.
+Translates ONNX protobuf directly to MLIR Gawee Dialect ops.
 
-- Parse inputs, outputs, weights, and nodes from JSON
-- Register weight tensors as function arguments
-- Traverse nodes in topological order to emit `gawee.*` ops
-- Output an MLIR module as `func.func @main(...)`
+- Parse ONNX graph inputs, outputs, and initializers
+- Small integer initializers become `arith.constant`; others become function arguments
+- Traverse ONNX nodes in topological order to emit `gawee.*` ops
+- Output an MLIR module as `func.func @forward(...)`
 
 ---
 
@@ -107,7 +113,8 @@ Convert Gawee Dialect ops to Linalg Dialect using OpConversionPattern.
 - `gawee.conv` → `linalg.conv_2d_nchw_fchw` (with padding)
 - `gawee.relu` → `linalg.generic` (max(x, 0) body)
 - `gawee.add` → `linalg.add`
-- Lowering patterns for BatchNorm / MaxPool / AdAvgPool / Flatten / Linear
+- `gawee.softmax` → `linalg.softmax` → decomposed to primitive ops
+- `gawee.matmul` / `gawee.gather` / `gawee.layer_norm` etc. for NLP models
 - Uses ConversionTarget, TypeConverter dialect conversion framework
 
 ---
@@ -118,8 +125,8 @@ Multi-stage lowering pipeline from Linalg to LLVM IR.
 
 - `--convert-gawee-to-linalg`: Gawee → Linalg
 - `--gawee-to-loops`: Gawee → Linalg → Bufferization → SCF loops
-- `--gawee-to-llvm`: Gawee → Linalg → Bufferize → SCF → LLVM (full pipeline)
-- Includes tensor → memref conversion (bufferization)
+- `--gawee-to-llvm`: Gawee → Linalg → Decompose → Bufferize → SCF → Math → LLVM (full pipeline)
+- Includes softmax decomposition, tensor → memref bufferization, math-to-libm/llvm
 
 ---
 
@@ -147,21 +154,21 @@ Before: 196 nodes → After: 116 nodes
 
 ```
 gawee/
-├── gawee_ir/                  # Frontend (Python)
-│   ├── graph.py               #   Gawee IR definition (Graph / Node / Value)
-│   ├── parser.py              #   PyTorch FX → Gawee IR conversion
-│   ├── mapper.py              #   PyTorch op → Gawee op mapping
-│   ├── translator.py          #   Gawee IR → JSON conversion
-│   ├── analysis/              #   Shape inference, Cost analysis
-│   └── passes/                #   Optimization passes (Conv-BN folding, etc.)
+├── front/onnx_rewrite/        # Frontend (Python) — ONNX graph rewrite
+│   ├── specs/                 #   Per-op rewrite specs and catalog
+│   ├── passes/                #   Rewrite passes (matmul conversion, etc.)
+│   └── utils/                 #   Constants and helpers
 ├── middle/mlir/               # Middle-end (C++ / MLIR)
 │   ├── include/Gawee/         #   TableGen definitions (Dialect, Ops)
 │   ├── lib/Gawee/             #   Dialect registration
-│   ├── lib/Conversion/        #   Gawee → Linalg conversion patterns
-│   ├── lib/Emit/              #   JSON → MLIR conversion (MLIREmitter)
-│   └── tools/                 #   gawee-opt, gawee-translate
-├── scripts/                   # Scripts
-├── jsondata/                  # Frontend output JSON
+│   ├── lib/Conversion/        #   Lowering: Gawee→Linalg, decomposition, bufferize
+│   ├── lib/Emit/              #   ONNX→MLIR translation (ONNXMLIREmitter)
+│   └── tools/                 #   gawee-opt, gawee-onnx-translate
+├── back/                      # Backend — AOT compiler and eval harness
+│   ├── gawee_aot.cpp          #   AOT builder (MLIR → native binary)
+│   ├── runtime_support.h      #   MemRef descriptor and NPY I/O
+│   └── eval_priority_models.py#   End-to-end correctness evaluation
+├── scripts/                   # Utility scripts
 └── docs/                      # Documentation
 ```
 
