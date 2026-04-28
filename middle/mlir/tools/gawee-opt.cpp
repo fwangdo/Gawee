@@ -39,6 +39,8 @@
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVMPass.h"
+#include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
+#include "mlir/Conversion/MathToLibm/MathToLibm.h"
 #include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
@@ -109,7 +111,11 @@ int main(int argc, char **argv) {
         pm.addPass(gawee::createLinalgVectorizationPass());
         pm.addPass(gawee::createLinalgVerificationPass());
 
-        // Step 3: Convert tensor.empty to bufferization.alloc_tensor
+        // Step 3a: Decompose aggregated linalg ops (e.g. softmax) into
+        // primitive linalg.generic / arith / math ops.
+        pm.addPass(gawee::createDecomposeAggregatedLinalgOpsPass());
+
+        // Step 3b: Convert tensor.empty to bufferization.alloc_tensor
         // (required for proper bufferization)
         pm.addPass(bufferization::createEmptyTensorToAllocTensorPass());
 
@@ -131,14 +137,19 @@ int main(int argc, char **argv) {
         pm.addPass(memref::createExpandStridedMetadataPass());
         pm.addPass(createLowerAffinePass());
 
-        // Step 9: Convert to LLVM dialect
+        // Step 9: Mark user-defined funcs for C-interface wrappers BEFORE
+        // MathToLibm creates libm declarations (which must not get wrappers).
+        pm.addPass(LLVM::createLLVMRequestCWrappersPass());
+
+        // Step 10: Convert to LLVM dialect
+        pm.addPass(createConvertMathToLibmPass());
+        pm.addPass(createConvertMathToLLVMPass());
         pm.addPass(createArithToLLVMConversionPass());
         pm.addPass(createConvertControlFlowToLLVMPass());
         pm.addPass(createFinalizeMemRefToLLVMConversionPass());
-        pm.addPass(LLVM::createLLVMRequestCWrappersPass());
         pm.addPass(createConvertFuncToLLVMPass());
 
-        // Step 10: Clean up unrealized casts
+        // Step 11: Clean up unrealized casts
         pm.addPass(createReconcileUnrealizedCastsPass());
       });
 

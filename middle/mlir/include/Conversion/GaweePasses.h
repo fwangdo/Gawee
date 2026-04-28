@@ -16,6 +16,7 @@ std::unique_ptr<Pass> createLinalgSchedulingPass();
 std::unique_ptr<Pass> createLinalgVectorizationPass();
 std::unique_ptr<Pass> createLinalgVerificationPass();
 std::unique_ptr<Pass> createGaweeBufferizePrepPass();
+std::unique_ptr<Pass> createDecomposeAggregatedLinalgOpsPass();
 
 } // namespace mlir::gawee
 

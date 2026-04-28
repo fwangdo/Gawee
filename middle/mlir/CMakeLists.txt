@@ -140,6 +140,7 @@ add_library(GaweeConversion
   lib/Conversion/LinalgVectorization.cpp
   lib/Conversion/LinalgVerification.cpp
   lib/Conversion/BufferizePrep.cpp
+  lib/Conversion/DecomposeAggregatedLinalgOps.cpp
 )
 
 add_dependencies(GaweeConversion GaweeIncGen)
@@ -194,6 +195,8 @@ target_link_libraries(gawee-opt
   MLIRArithToLLVM
   MLIRControlFlowToLLVM
   MLIRFuncToLLVM
+  MLIRMathToLLVM
+  MLIRMathToLibm
   MLIRMemRefToLLVM
   MLIRSCFToControlFlow
   MLIRReconcileUnrealizedCasts
