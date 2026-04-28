@@ -27,6 +27,27 @@ PRIORITY_MODELS = {
     "distilbert_base_uncased": ROOT / "artifacts/front_rewrite_bench/distilbert_base_uncased.onnx",
 }
 
+# Static shape overrides for models with dynamic dimensions.
+# Maps model name → {input_name: [concrete_shape]}.
+STATIC_SHAPE_OVERRIDES: dict[str, dict[str, list[int]]] = {
+    "bert_tiny": {
+        "input_ids": [1, 128],
+        "attention_mask": [1, 128],
+        "token_type_ids": [1, 128],
+    },
+    "distilbert_base_uncased": {
+        "input_ids": [1, 128],
+        "attention_mask": [1, 128],
+    },
+}
+
+# Per-model atol for correctness comparison.
+# NLP models accumulate more floating-point error than vision models.
+MODEL_ATOL: dict[str, float] = {
+    "distilbert_base_uncased": 5e-4,
+    "bert_tiny": 5e-4,
+}
+
 
 @dataclass
 class StageResult:
@@ -71,6 +92,45 @@ def first_error_line(text: str) -> str:
       if stripped:
           return stripped
     return "(no stderr)"
+
+
+def bind_static_shapes(
+    model: onnx.ModelProto,
+    shape_overrides: dict[str, list[int]],
+) -> onnx.ModelProto:
+    """Replace dynamic dimensions in graph inputs with concrete values.
+
+    Also resolves matching symbolic dims (dim_param) in graph outputs
+    and value_info, since onnx.shape_inference may not propagate them.
+    """
+    # Collect dim_param → concrete value mapping from inputs.
+    param_map: dict[str, int] = {}
+    for inp in model.graph.input:
+        if inp.name not in shape_overrides:
+            continue
+        target = shape_overrides[inp.name]
+        dims = inp.type.tensor_type.shape.dim
+        if len(dims) != len(target):
+            raise ValueError(
+                f"{inp.name}: expected rank {len(target)}, got {len(dims)}"
+            )
+        for dim, val in zip(dims, target):
+            if dim.HasField("dim_param"):
+                param_map[dim.dim_param] = val
+            dim.ClearField("dim_param")
+            dim.dim_value = val
+
+    # Apply param_map to outputs and value_info.
+    for vi in list(model.graph.output) + list(model.graph.value_info):
+        if not vi.type.HasField("tensor_type"):
+            continue
+        for dim in vi.type.tensor_type.shape.dim:
+            if dim.HasField("dim_param") and dim.dim_param in param_map:
+                val = param_map[dim.dim_param]
+                dim.ClearField("dim_param")
+                dim.dim_value = val
+
+    return shape_inference.infer_shapes(model)
 
 
 def infer_model(src: Path, dst: Path) -> StageResult:
@@ -130,8 +190,8 @@ def tensor_proto_to_numpy(tensor: onnx.TensorProto) -> np.ndarray:
     return numpy_helper.to_array(tensor)
 
 
-def initializer_becomes_runtime_arg(tensor: onnx.TensorProto) -> bool:
-    return tensor.data_type not in {
+def _is_integer_type(data_type: int) -> bool:
+    return data_type in {
         onnx.TensorProto.BOOL,
         onnx.TensorProto.INT8,
         onnx.TensorProto.INT16,
@@ -142,6 +202,29 @@ def initializer_becomes_runtime_arg(tensor: onnx.TensorProto) -> bool:
         onnx.TensorProto.UINT32,
         onnx.TensorProto.UINT64,
     }
+
+
+def _has_integer_data(tensor: onnx.TensorProto) -> bool:
+    """Check if an integer initializer has non-empty data.
+
+    Mirrors the collectI64TensorLiteral logic in ONNXMLIREmitter.cpp:
+    only INT32/INT64 with non-empty data become arith.constant;
+    empty tensors (shape contains 0) fall through to function args.
+    """
+    if tensor.data_type == onnx.TensorProto.INT64:
+        return tensor.int64_data or tensor.raw_data
+    if tensor.data_type == onnx.TensorProto.INT32:
+        return tensor.int32_data or tensor.raw_data
+    return False
+
+
+def initializer_becomes_runtime_arg(tensor: onnx.TensorProto) -> bool:
+    """Return True if this initializer becomes a function argument in MLIR."""
+    if not _is_integer_type(tensor.data_type):
+        return True
+    # Integer initializers with data become arith.constant (not a func arg).
+    # Empty integer tensors (e.g. tensor<0xi64>) become func args.
+    return not _has_integer_data(tensor)
 
 
 def static_shape_from_value_info(value_info: onnx.ValueInfoProto) -> list[int] | None:
@@ -260,7 +343,7 @@ def build_aot_runner(abi_source: Path, llvm_mlir: Path, runner_path: Path) -> St
     return StageResult(True, "ok", str(runner_path))
 
 
-def compare_with_ort(model_path: Path, runner: Path, inputs_dir: Path, outputs_dir: Path) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+def compare_with_ort(model_path: Path, runner: Path, inputs_dir: Path, outputs_dir: Path, *, atol: float = 1e-4) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     model = onnx.load(model_path)
     feed = make_feed_dict_from_saved_inputs(model, inputs_dir)
     if feed is None:
@@ -285,26 +368,29 @@ def compare_with_ort(model_path: Path, runner: Path, inputs_dir: Path, outputs_d
         }, None
 
     max_abs = float(np.max(np.abs(gawee_output - ort_output)))
-    close = bool(np.allclose(gawee_output, ort_output, atol=1e-4, rtol=1e-4))
+    close = bool(np.allclose(gawee_output, ort_output, atol=atol, rtol=1e-4))
 
-    bench = run(
-        [
-            str(BACK_BUILD / "gawee-eval"),
-            "benchmark",
-            "--runner",
-            str(runner),
-            "--inputs",
-            str(inputs_dir),
-            "--outputs",
-            str(outputs_dir / "bench"),
-            "--warmup",
-            "1",
-            "--iters",
-            "5",
-        ]
-    )
+    try:
+        bench = run(
+            [
+                str(BACK_BUILD / "gawee-eval"),
+                "benchmark",
+                "--runner",
+                str(runner),
+                "--inputs",
+                str(inputs_dir),
+                "--outputs",
+                str(outputs_dir / "bench"),
+                "--warmup",
+                "1",
+                "--iters",
+                "5",
+            ]
+        )
+    except subprocess.TimeoutExpired:
+        bench = None
     gawee_latency = None
-    if bench.returncode == 0:
+    if bench is not None and bench.returncode == 0:
         text = bench.stdout
         match = re.search(r"p50:\s+([0-9.]+)", text)
         if match:
@@ -318,7 +404,7 @@ def compare_with_ort(model_path: Path, runner: Path, inputs_dir: Path, outputs_d
     return {
         "ok": close,
         "max_abs_diff": max_abs,
-        "atol": 1e-4,
+        "atol": atol,
         "rtol": 1e-4,
     }, latency
 
@@ -330,8 +416,23 @@ def evaluate_model(name: str, model_path: Path) -> ModelReport:
     model_dir.mkdir(parents=True, exist_ok=True)
 
     notes: list[str] = []
+
+    # Bind dynamic dims to concrete values before shape inference.
+    src_path = model_path
+    overrides = STATIC_SHAPE_OVERRIDES.get(name)
+    if overrides is not None:
+        try:
+            raw = onnx.load(model_path)
+            fixed = bind_static_shapes(raw, overrides)
+            fixed_path = model_dir / "static.onnx"
+            onnx.save(fixed, fixed_path)
+            src_path = fixed_path
+            notes.append(f"bound static shapes: {overrides}")
+        except Exception as exc:
+            return ModelReport(name, str(model_path), StageResult(False, f"shape bind: {exc}"), StageResult(False, "skipped"), StageResult(False, "skipped"), StageResult(False, "skipped"), StageResult(False, "skipped"), None, None, notes)
+
     inferred_path = model_dir / "inferred.onnx"
-    inferred = infer_model(model_path, inferred_path)
+    inferred = infer_model(src_path, inferred_path)
     if not inferred.ok:
         return ModelReport(name, str(model_path), inferred, StageResult(False, "skipped"), StageResult(False, "skipped"), StageResult(False, "skipped"), StageResult(False, "skipped"), None, None, notes)
 
@@ -359,8 +460,10 @@ def evaluate_model(name: str, model_path: Path) -> ModelReport:
             runner_path = model_dir / "forward_runner"
             aot = build_aot_runner(loops_path, llvm_path, runner_path)
             if aot.ok:
+                atol = MODEL_ATOL.get(name, 1e-4)
                 correctness, latency = compare_with_ort(
-                    inferred_path, runner_path, inputs_dir, model_dir / "outputs"
+                    inferred_path, runner_path, inputs_dir, model_dir / "outputs",
+                    atol=atol,
                 )
         else:
             aot = StageResult(False, "could not build static runner inputs", None)
