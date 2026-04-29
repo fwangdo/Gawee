@@ -52,6 +52,7 @@ middle/mlir/test/*.tmp
 /test_output/
 /todo/progress.md
 /todo/
+/middle/mlir/explanation/
 
 # Benchmark model binaries
 benchmarks/onnx/
@@ -62,6 +63,7 @@ benchmarks/**/*.onnx_data
 benchmarks/**/*.onnx.data
 
 # Local learning notes
+*_prac*
 front/onnx_rewrite/explain.md
 middle/todo.md
 middle/mlir/lib/Emit/onnx_prac.cpp

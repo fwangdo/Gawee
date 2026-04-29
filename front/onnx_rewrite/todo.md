@@ -99,6 +99,22 @@ rewrite 후 평가는 아래 기준으로 수행한다.
 [ ] CNN: image-shaped float input
 [ ] NLP: token / mask / segment input policy
 
+## Additional Benchmark Expansion
+
+`opset >= 13` 추가 benchmark를 통해 아래 후속 과제가 확인됐다.
+
+[ ] `distilbert_base_uncased_mnli`를 추가 benchmark 후보로 등록하고 기존 `distilbert`와 함께 NLP drift / latency 경향 비교
+[ ] `vit_tiny_patch16_224`를 추가 benchmark 후보로 등록하고 ViT 계열의 rewrite correctness / latency 경향 확인
+[ ] `vit_base_patch16_224`를 추가 benchmark 후보로 등록하고 model size 증가 시 graph blow-up 영향 비교
+[ ] vision transformer 입력용 `pixel_values` 생성 규칙을 validation harness에 추가
+[ ] vision 입력 기본 shape를 `(N, 3, H, W)`로 다루도록 `runtime/validation.py` 보강
+[ ] `dinov3_convnext_tiny`를 modern ONNX stress benchmark로 유지
+[ ] `LayerNormalization` rewrite 구현
+[ ] `CastLike` rewrite 또는 support 전략 결정
+[ ] `Loop` 지원 여부 결정 또는 benchmark scope에서 제외할 기준 정리
+[ ] `SequenceEmpty` 포함 sequence 계열 op 지원 여부 결정
+[ ] modern ONNX benchmark에 대해 "현재 rewrite 범위 밖"과 "우선 구현 대상"을 구분한 문서화
+
 ## Done Criteria
 
 `resnet18`가 아래를 만족하면 1차 목표 달성으로 본다.

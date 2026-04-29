@@ -25,6 +25,15 @@
 
 모델 경로는 [specs/catalog.py](/Users/hdy/code/portfolio/Gawee/front/onnx_rewrite/specs/catalog.py)의 `PRIORITY_MODELS`에 정의되어 있다.
 
+## Extended benchmark 후보
+
+- `qwen3_0_6b`
+  `RoPE` 기반 decoder-only LLM benchmark 후보다.
+- `yolo26_n`
+  최신 `YOLO26` 계열 benchmark 후보다.
+
+이 둘은 [specs/catalog.py](/Users/hdy/code/portfolio/Gawee/front/onnx_rewrite/specs/catalog.py)의 `EXTENDED_BENCHMARK_MODELS`에 정의되어 있다.
+
 ## Supported Op Contract
 
 지원 대상으로 간주하는 op set은 [specs/catalog.py](/Users/hdy/code/portfolio/Gawee/front/onnx_rewrite/specs/catalog.py)의 `SUPPORTED_OPS`가 기준이다.

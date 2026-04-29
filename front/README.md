@@ -21,6 +21,13 @@
 
 즉 현재 근시일 조합은 `vision 1개 + NLP 2개`이다.
 
+## Extended Benchmark Candidates
+
+- `qwen3_0_6b`
+  `RoPE`를 쓰는 decoder-only LLM 후보다. ONNX export는 `opset 17` 기준을 맞추는 쪽으로 관리한다.
+- `yolo26_n`
+  최신 `YOLO26` 계열의 소형 모델 후보다. 원본 `pt`를 받아 로컬에서 `ONNX opset 17`로 export해 benchmark에 넣는다.
+
 Frontend의 현재 benchmark scope는 `ai.onnx opset >= 13` 모델만 대상으로 한다.
 
 ## Supported Op Contract

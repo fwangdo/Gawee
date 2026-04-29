@@ -194,6 +194,7 @@ static FailureOr<SmallVector<int64_t>> getConstantI64Tensor(Value value) {
 static Value extractTensorScalarAsIndex(OpBuilder &builder, Location loc,
                                         Value tensor, int64_t position) {
   Value idx = arith::ConstantOp::create(builder, loc, builder.getIndexAttr(position));
+  // the reason of using "ValueRange" is that it can access multi index. 
   Value extracted = tensor::ExtractOp::create(builder, loc, tensor, ValueRange{idx});
   if (isa<IndexType>(extracted.getType()))
     return extracted;
@@ -239,6 +240,7 @@ static FailureOr<Value> expandReductionResultToKeepDims(
         tensor::ReshapeOp::create(rewriter, loc, outputType, reduced, shapeValue));
   }
 
+  // the axes look like { 2, 3 }. it should be recovered. 
   llvm::SmallDenseSet<int64_t> reducedAxes;
   for (int64_t axis : axes)
     reducedAxes.insert(axis);
