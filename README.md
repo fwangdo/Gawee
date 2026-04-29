@@ -1,182 +1,184 @@
 # gawee
 
-[![한국어](https://img.shields.io/badge/lang-한국어-blue)](README.ko.md)
+[![English](https://img.shields.io/badge/lang-English-blue)](README.en.md)
 
-A deep learning compiler that takes ONNX models, rewrites and optimizes the graph, and lowers through an MLIR-based pipeline (Gawee Dialect → Linalg → SCF → LLVM IR) to produce AOT-compiled native executables.
+`gawee`는 ONNX 모델을 받아 그래프 rewrite를 수행하고, MLIR 기반 파이프라인
+(`Gawee Dialect -> Linalg -> SCF/LLVM`)으로 lowering해서 AOT 실행 파일까지
+만드는 딥러닝 컴파일러 프로젝트입니다.
+
+현재 우선순위는 "작은 vision 모델용 우회 rewrite"보다, `resnet / distilbert / qwen`
+같은 실제 benchmark 모델이 middle-end에서 직접 지원되는 op 집합을 넓히는 것입니다.
 
 ---
 
-## Target Models
+## 현재 상태
 
-| Model | Frontend | MLIR Lowering | AOT Build | Correctness |
+| 모델 | ONNX Emission | Gawee -> Linalg | Full LLVM/AOT | 비고 |
 | --- | --- | --- | --- | --- |
-| ResNet-18 | pass | pass | pass | pass (max_abs ≈ 3e-6) |
-| bert_tiny | pass | pass | pass | WIP (numerical) |
-| distilbert_base_uncased | pass | pass | pass | WIP (numerical) |
+| ResNet-18 | pass | pass | pass | AOT 실행 및 수치 검증 경로 확보 |
+| distilbert_base_uncased | pass | pass | 재확인 중 | semantic op 확장 이후 full LLVM 재검증 중 |
+| qwen3_0_6b | pass | pass | 진행 중 | 대형 모듈이라 full LLVM 경로가 오래 걸림 |
 
-NLP models require static shape binding (batch=1, seq_len=128) before translation.
+### 이번 단계에서 늘린 지원 범위
+
+- `MatMul`을 `Gemm/Linear`와 분리
+- semantic op를 `gawee` dialect에 명시적으로 추가
+  - `gawee.gather`
+  - `gawee.gather_elements`
+  - `gawee.range`
+  - `gawee.resize`
+  - `gawee.split`
+  - `gawee.tile`
+- trivial decomposition은 emitter에서 직접 lowering
+  - `Pow`, `Neg`, `Sin`, `Cos`, `And`, `LessOrEqual`, `IsNaN`, `Mod`
+  - `Constant`, `ConstantOfShape`
+
+핵심 의도는 front에서 unsupported op를 과하게 rewrite해서 숨기지 않고,
+middle-end가 benchmark에 실제로 등장하는 op semantics를 직접 받도록 만드는 것입니다.
 
 ---
 
-## Pipeline
+## 파이프라인
 
-```
-ONNX Model → Rewrite/Optimize → MLIR (Gawee Dialect) → Linalg → SCF → LLVM IR → Native Binary
+```text
+ONNX Model
+  -> Rewrite / Optimize (Python)
+  -> MLIR Gawee Dialect
+  -> Linalg
+  -> Bufferization / SCF / Math / LLVM
+  -> Native Binary
 ```
 
 ### Frontend (Python)
 
-- Load ONNX models and apply graph-level rewrites (op fusion, constant folding)
-- Spec-driven rewrite system with per-op correctness validation
-- Export rewritten ONNX for downstream translation
+- ONNX graph rewrite 및 정규화
+- constant folding, spec-driven rewrite
+- 모델별 unsupported op audit
 
 ### Middle-end (C++ / MLIR)
 
-- Translate ONNX directly to MLIR Gawee Dialect (`gawee-onnx-translate`)
-- Gawee Dialect → Linalg Dialect conversion (GaweeToLinalg)
-- Decompose aggregated ops (e.g. linalg.softmax) into primitive linalg.generic
-- Multi-stage lowering: Linalg → Bufferization → SCF loops → Math/LLVM Dialect
-- CLI tools: `gawee-opt`, `gawee-onnx-translate`
+- `gawee-onnx-translate`
+  - ONNX protobuf를 직접 읽어서 `gawee.*` 또는 direct `tensor/linalg/math` op 생성
+- `gawee-opt`
+  - `--convert-gawee-to-linalg`
+  - `--gawee-to-loops`
+  - `--gawee-to-llvm`
 
 ### Backend (C++)
 
-- AOT compilation: LLVM IR → native executable via `gawee-aot`
-- Automatic launcher code generation from MLIR function signatures
-- Correctness validation against ONNX Runtime (`eval_priority_models.py`)
+- AOT 실행 파일 생성
+- ONNX Runtime 기준 결과 비교
+- NLP 모델은 static shape binding 경로를 사용
 
 ---
 
-## Key Concepts
+## 지원 전략
 
-### 1. Gawee IR Design
+모든 연산을 새 dialect op로 만들지는 않습니다.
 
-A custom IR that explicitly represents only the information needed for graph analysis and optimization.
+### 1. semantic op는 `gawee`에 남긴다
 
-- Clear separation of operation nodes and data flow
-- Explicit shape / dtype / layout / data representation
-- Graph: Nodes (ops) / Values (tensors)
-- Node: op type / input / output / attributes / fx Node
-- Value: shape / dtype / producer / consumers / data (only for constants)
+다음 op는 shape/axis/lookup 의미가 크고, 나중에 fallback 여부를 판단할 가치가 있습니다.
 
----
+- `MatMul`
+- `Gather`
+- `GatherElements`
+- `Range`
+- `Resize`
+- `Split`
+- `Tile`
 
-### 2. Graph Analysis
+이런 op는:
 
-Analysis performed for optimization:
+1. `GaweeOps.td`에 정의
+2. ONNX emitter에서 `gawee.*` 생성
+3. `GaweeToLinalg.cpp`에서 lowering
 
-- Shape inference
-- Constant propagation
-- Graph traversal (topological order)
-- Cost estimation:
-  - FLOPs
-  - Memory access estimation (read/write)
+순서로 구현합니다.
 
----
+### 2. trivial op는 direct decomposition 한다
 
-### 3. Frontend Optimization
+다음 op는 별도 dialect op 없이 emitter에서 바로 푸는 편이 낫습니다.
 
-Only **graph-level optimizations** are performed in the frontend.
+- `Pow`
+- `Neg`
+- `Sin`
+- `Cos`
+- `And`
+- `LessOrEqual`
+- `IsNaN`
+- `Mod`
+- `Constant`
+- `ConstantOfShape`
 
-- Constant Folding — evaluate constant subgraphs at compile time
-- Operator Fusion — combine consecutive op patterns into fused operators
-  - e.g., Conv + BatchNorm, Conv + Add
-- Eliminate Python ops from fx
-- [Optimization pass details](docs/arch.md)
-
----
-
-### 4. MLIR Gawee Dialect
-
-Custom MLIR Dialect for DL ops defined using TableGen.
-
-- Ops under `gawee` namespace: Conv2D / ReLU / Add / BatchNorm / MaxPool / AdAvgPool / Flatten / Linear
-- Input/output types and attributes (stride, padding, dilation, etc.) declared in TableGen
-- C++ boilerplate auto-generated from TableGen
+이 경우 `tensor.generate`, `linalg.generic`, `arith`, `math` 조합으로 직접 낮춥니다.
 
 ---
 
-### 5. ONNX → MLIR Conversion (ONNXMLIREmitter)
+## 현재 middle-end에서 중요한 op
 
-Translates ONNX protobuf directly to MLIR Gawee Dialect ops.
+현재 `Gawee` dialect와 ONNX emission 경로에서 중요한 축은 다음과 같습니다.
 
-- Parse ONNX graph inputs, outputs, and initializers
-- Small integer initializers become `arith.constant`; others become function arguments
-- Traverse ONNX nodes in topological order to emit `gawee.*` ops
-- Output an MLIR module as `func.func @forward(...)`
-
----
-
-### 6. Gawee → Linalg Lowering
-
-Convert Gawee Dialect ops to Linalg Dialect using OpConversionPattern.
-
-- `gawee.conv` → `linalg.conv_2d_nchw_fchw` (with padding)
-- `gawee.relu` → `linalg.generic` (max(x, 0) body)
-- `gawee.add` → `linalg.add`
-- `gawee.softmax` → `linalg.softmax` → decomposed to primitive ops
-- `gawee.matmul` / `gawee.gather` / `gawee.layer_norm` etc. for NLP models
-- Uses ConversionTarget, TypeConverter dialect conversion framework
+- CNN 경로
+  - `conv`, `relu`, `add`, `max_pool`, `average_pool`, `global_average_pool`
+- Transformer / LLM 경로
+  - `matmul`, `reshape`, `transpose`, `expand`, `slice`, `softmax`
+  - `gather`, `gather_elements`, `range`, `split`, `tile`, `resize`
+- 공통 연산
+  - `mul`, `div`, `sub`, `reduce_mean`, `reduce_sum`, `where`, `cast`
 
 ---
 
-### 7. Multi-stage Lowering
+## 검증 메모
 
-Multi-stage lowering pipeline from Linalg to LLVM IR.
+이번 semantic op 확장 이후 확인한 내용:
 
-- `--convert-gawee-to-linalg`: Gawee → Linalg
-- `--gawee-to-loops`: Gawee → Linalg → Bufferization → SCF loops
-- `--gawee-to-llvm`: Gawee → Linalg → Decompose → Bufferize → SCF → Math → LLVM (full pipeline)
-- Includes softmax decomposition, tensor → memref bufferization, math-to-libm/llvm
+- `resnet18`
+  - ONNX emission 통과
+  - `gawee-to-llvm` 통과
+- `distilbert_base_uncased`
+  - ONNX emission 통과
+  - `convert-gawee-to-linalg` 통과
+- `qwen3_0_6b`
+  - ONNX emission 통과
+  - `convert-gawee-to-linalg` 통과
+  - `gawee.range`의 dynamic length legalization 문제를 수정
 
----
-
-## Optimization Results
-
-### ResNet-18
-```
-Before: 69 nodes → After: 49 nodes
-  - ConvBNFolding: 20 applications
-  - Memory reads:  37.2MB → 27.3MB (26.7% reduction)
-  - Memory writes: 32.9MB → 23.0MB (30.2% reduction)
-```
-
-### UNet
-```
-Before: 196 nodes → After: 116 nodes
-  - IdentityElimination: 12, ConvBNFolding: 46, PythonOpElimination: 22
-  - Memory reads:  136.6MB → 94.9MB (30.5% reduction)
-  - Memory writes: 116.0MB → 83.7MB (27.9% reduction)
-```
+`qwen`은 모듈이 커서 full LLVM 파이프라인 자체가 오래 걸리므로,
+현재는 "semantic op가 MLIR 단계에서 illegal로 남지 않는다"는 것을 우선 기준으로 봅니다.
 
 ---
 
-## Project Structure
+## 학습 문서
 
-```
+이번 단계와 직접 연결되는 문서:
+
+- [MatMul Lowering Summary](middle/mlir/docs/kr/MatMulLowering_Summary.md)
+- [MatMul Lowering Quiz](middle/mlir/docs/kr/MatMulLowering_Quiz.cpp)
+- [Semantic Op Lowering Summary](middle/mlir/docs/kr/SemanticOpLowering_Summary.md)
+- [Semantic Op Lowering Quiz](middle/mlir/docs/kr/SemanticOpLowering_Quiz.cpp)
+
+---
+
+## 프로젝트 구조
+
+```text
 gawee/
-├── front/onnx_rewrite/        # Frontend (Python) — ONNX graph rewrite
-│   ├── specs/                 #   Per-op rewrite specs and catalog
-│   ├── passes/                #   Rewrite passes (matmul conversion, etc.)
-│   └── utils/                 #   Constants and helpers
-├── middle/mlir/               # Middle-end (C++ / MLIR)
-│   ├── include/Gawee/         #   TableGen definitions (Dialect, Ops)
-│   ├── lib/Gawee/             #   Dialect registration
-│   ├── lib/Conversion/        #   Lowering: Gawee→Linalg, decomposition, bufferize
-│   ├── lib/Emit/              #   ONNX→MLIR translation (ONNXMLIREmitter)
-│   └── tools/                 #   gawee-opt, gawee-onnx-translate
-├── back/                      # Backend — AOT compiler and eval harness
-│   ├── gawee_aot.cpp          #   AOT builder (MLIR → native binary)
-│   ├── runtime_support.h      #   MemRef descriptor and NPY I/O
-│   └── eval_priority_models.py#   End-to-end correctness evaluation
-├── scripts/                   # Utility scripts
-└── docs/                      # Documentation
+├── front/onnx_rewrite/        # Python frontend / ONNX rewrite
+├── middle/mlir/               # MLIR middle-end
+│   ├── include/Gawee/         # TableGen dialect/op definitions
+│   ├── include/Emit/          # ONNX emitter headers
+│   ├── lib/Emit/              # ONNX -> MLIR
+│   ├── lib/Conversion/        # Gawee -> Linalg / lowering pipeline
+│   └── tools/                 # gawee-opt, gawee-onnx-translate
+├── back/                      # AOT builder / evaluation
+└── docs/                      # notes and reports
 ```
 
 ---
 
-## References
+## 참고
 
-- PyTorch fx documentation
 - ONNX specification
-- TVM architecture documentation
-- MLIR documentation (Dialects, TableGen, Conversion)
+- MLIR documentation
+- LLVM documentation
