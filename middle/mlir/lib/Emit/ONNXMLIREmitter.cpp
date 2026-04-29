@@ -6,13 +6,20 @@
 #include "Gawee/GaweeDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/Value.h"
 
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <limits>
+#include <numeric>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -160,6 +167,311 @@ bool extractI64TensorLiteral(const onnx::TensorProto &tensor,
   default:
     return false;
   }
+}
+
+SmallVector<Value> materializeDynamicDims(OpBuilder &builder, Location loc,
+                                          RankedTensorType resultType,
+                                          function_ref<Value(int64_t)> dimBuilder) {
+  SmallVector<Value> dynamicDims;
+  dynamicDims.reserve(resultType.getNumDynamicDims());
+  for (int64_t dim = 0; dim < resultType.getRank(); ++dim) {
+    if (!resultType.isDynamicDim(dim))
+      continue;
+    dynamicDims.push_back(dimBuilder(dim));
+  }
+  return dynamicDims;
+}
+
+Value createEmptyTensor(OpBuilder &builder, Location loc,
+                        RankedTensorType resultType,
+                        ArrayRef<Value> dynamicDims = {}) {
+  return tensor::EmptyOp::create(builder, loc, resultType.getShape(),
+                                 resultType.getElementType(), dynamicDims);
+}
+
+Value createScalarConstant(OpBuilder &builder, Location loc, Type type,
+                           double floatValue, int64_t intValue) {
+  if (auto floatType = dyn_cast<FloatType>(type)) {
+    return arith::ConstantOp::create(builder, loc,
+                                     builder.getFloatAttr(floatType, floatValue));
+  }
+  if (isa<IndexType>(type)) {
+    return arith::ConstantOp::create(builder, loc, builder.getIndexAttr(intValue));
+  }
+  return arith::ConstantOp::create(builder, loc, type,
+                                   builder.getIntegerAttr(type, intValue));
+}
+
+std::optional<Value> getBroadcastedDimValue(OpBuilder &builder, Location loc,
+                                            RankedTensorType inputType, Value input,
+                                            int64_t resultRank, int64_t resultDim) {
+  int64_t inputRank = inputType.getRank();
+  if (inputRank == 0)
+    return std::nullopt;
+  int64_t leading = resultRank - inputRank;
+  if (resultDim < leading)
+    return std::nullopt;
+  int64_t inputDim = resultDim - leading;
+  int64_t staticDim = inputType.getShape()[inputDim];
+  if (staticDim == 1)
+    return std::nullopt;
+  if (inputType.isDynamicDim(inputDim))
+    return tensor::DimOp::create(builder, loc, input, inputDim).getResult();
+  return createScalarConstant(builder, loc, builder.getIndexType(), 0.0, staticDim);
+}
+
+SmallVector<Value> materializeBroadcastedDynamicDims(OpBuilder &builder, Location loc,
+                                                     RankedTensorType resultType,
+                                                     Value lhs, Value rhs) {
+  auto lhsType = cast<RankedTensorType>(lhs.getType());
+  auto rhsType = cast<RankedTensorType>(rhs.getType());
+  SmallVector<Value> dynamicDims;
+  dynamicDims.reserve(resultType.getNumDynamicDims());
+  int64_t resultRank = resultType.getRank();
+  for (int64_t dim = 0; dim < resultRank; ++dim) {
+    if (!resultType.isDynamicDim(dim))
+      continue;
+    if (auto lhsDim = getBroadcastedDimValue(builder, loc, lhsType, lhs, resultRank, dim)) {
+      dynamicDims.push_back(*lhsDim);
+      continue;
+    }
+    if (auto rhsDim = getBroadcastedDimValue(builder, loc, rhsType, rhs, resultRank, dim)) {
+      dynamicDims.push_back(*rhsDim);
+      continue;
+    }
+    dynamicDims.push_back(
+        createScalarConstant(builder, loc, builder.getIndexType(), 0.0, 1));
+  }
+  return dynamicDims;
+}
+
+Value extractTensorScalarAsIndex(OpBuilder &builder, Location loc, Value tensor,
+                                 ArrayRef<Value> positions) {
+  Value extracted = tensor::ExtractOp::create(builder, loc, tensor, positions);
+  if (isa<IndexType>(extracted.getType()))
+    return extracted;
+  return arith::IndexCastOp::create(builder, loc, builder.getIndexType(), extracted);
+}
+
+Value makeZeroTensorLike(OpBuilder &builder, Location loc,
+                         RankedTensorType resultType,
+                         ArrayRef<Value> dynamicDims = {}) {
+  Value empty = createEmptyTensor(builder, loc, resultType, dynamicDims);
+  Value zero = createScalarConstant(builder, loc, resultType.getElementType(), 0.0, 0);
+  return linalg::FillOp::create(builder, loc, zero, empty).getResult(0);
+}
+
+std::string externalDataLocation(const onnx::TensorProto &tensor,
+                                 llvm::StringRef key) {
+  for (const auto &entry : tensor.external_data()) {
+    if (entry.key() == key)
+      return entry.value();
+  }
+  return "";
+}
+
+DenseElementsAttr buildDenseElementsAttr(OpBuilder &builder,
+                                         const onnx::TensorProto &tensor,
+                                         llvm::StringRef onnxDirectory) {
+  SmallVector<int64_t> shape;
+  for (auto dim : tensor.dims())
+    shape.push_back(dim);
+
+  Type elemType;
+  switch (tensor.data_type()) {
+  case onnx::TensorProto_DataType_FLOAT:
+    elemType = builder.getF32Type();
+    break;
+  case onnx::TensorProto_DataType_FLOAT16:
+    elemType = builder.getF16Type();
+    break;
+  case onnx::TensorProto_DataType_INT64:
+    elemType = builder.getI64Type();
+    break;
+  case onnx::TensorProto_DataType_INT32:
+    elemType = builder.getI32Type();
+    break;
+  case onnx::TensorProto_DataType_BOOL:
+    elemType = builder.getI1Type();
+    break;
+  default:
+    return DenseElementsAttr();
+  }
+
+  auto tensorType = RankedTensorType::get(shape, elemType);
+  int64_t numElements = 1;
+  for (int64_t dim : shape)
+    numElements *= dim;
+  if (shape.empty())
+    numElements = 1;
+  auto readExternalBytes = [&]() -> std::string {
+    if (tensor.data_location() != onnx::TensorProto_DataLocation_EXTERNAL)
+      return "";
+    std::string location = externalDataLocation(tensor, "location");
+    if (location.empty())
+      return "";
+    std::filesystem::path dataPath =
+        std::filesystem::path(std::string(onnxDirectory)) / location;
+    std::ifstream in(dataPath, std::ios::binary);
+    if (!in)
+      return "";
+    std::string offsetText = externalDataLocation(tensor, "offset");
+    std::string lengthText = externalDataLocation(tensor, "length");
+    size_t offset = offsetText.empty() ? 0 : static_cast<size_t>(std::stoull(offsetText));
+    size_t length = lengthText.empty() ? 0 : static_cast<size_t>(std::stoull(lengthText));
+    in.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+    std::string raw(length, '\0');
+    in.read(raw.data(), static_cast<std::streamsize>(length));
+    if (static_cast<size_t>(in.gcount()) != length)
+      return "";
+    return raw;
+  };
+  if (tensor.data_type() == onnx::TensorProto_DataType_FLOAT) {
+    SmallVector<float> values;
+    if (tensor.float_data_size() > 0) {
+      values.reserve(tensor.float_data_size());
+      for (auto value : tensor.float_data())
+        values.push_back(value);
+    } else if (!tensor.raw_data().empty()) {
+      size_t count = tensor.raw_data().size() / sizeof(float);
+      values.resize(count);
+      std::memcpy(values.data(), tensor.raw_data().data(), tensor.raw_data().size());
+    } else if (tensor.data_location() == onnx::TensorProto_DataLocation_EXTERNAL) {
+      std::string raw = readExternalBytes();
+      if (raw.empty())
+        return DenseElementsAttr();
+      size_t count = raw.size() / sizeof(float);
+      values.resize(count);
+      std::memcpy(values.data(), raw.data(), raw.size());
+    } else if (numElements == 0) {
+      return DenseElementsAttr::get(tensorType, ArrayRef<float>{});
+    }
+    return DenseElementsAttr::get(tensorType, ArrayRef<float>(values));
+  }
+  if (tensor.data_type() == onnx::TensorProto_DataType_BOOL) {
+    SmallVector<int64_t> values;
+    if (!tensor.raw_data().empty()) {
+      values.reserve(tensor.raw_data().size());
+      for (unsigned char byte : tensor.raw_data())
+        values.push_back(byte != 0);
+    } else if (numElements == 0) {
+      return DenseElementsAttr::get(tensorType, ArrayRef<int64_t>{});
+    }
+    return DenseElementsAttr::get(tensorType, ArrayRef<int64_t>(values));
+  }
+
+  SmallVector<int64_t> i64Values;
+  if (extractI64TensorLiteral(tensor, i64Values)) {
+    if (tensor.data_type() == onnx::TensorProto_DataType_INT32) {
+      SmallVector<int32_t> values;
+      values.reserve(i64Values.size());
+      for (int64_t value : i64Values)
+        values.push_back(static_cast<int32_t>(value));
+      return DenseElementsAttr::get(tensorType, ArrayRef<int32_t>(values));
+    }
+    if (tensor.data_type() == onnx::TensorProto_DataType_BOOL) {
+      SmallVector<bool> values;
+      values.reserve(i64Values.size());
+      for (int64_t value : i64Values)
+        values.push_back(value != 0);
+      return DenseElementsAttr::get(tensorType, ArrayRef<bool>(values));
+    }
+    return DenseElementsAttr::get(tensorType, ArrayRef<int64_t>(i64Values));
+  }
+  if (numElements == 0) {
+    if (tensor.data_type() == onnx::TensorProto_DataType_INT32)
+      return DenseElementsAttr::get(tensorType, ArrayRef<int32_t>{});
+    return DenseElementsAttr::get(tensorType, ArrayRef<int64_t>{});
+  }
+  if (tensor.data_location() == onnx::TensorProto_DataLocation_EXTERNAL &&
+      (tensor.data_type() == onnx::TensorProto_DataType_INT64 ||
+       tensor.data_type() == onnx::TensorProto_DataType_INT32)) {
+    std::string raw = readExternalBytes();
+    if (raw.empty())
+      return DenseElementsAttr();
+    if (tensor.data_type() == onnx::TensorProto_DataType_INT64) {
+      size_t count = raw.size() / sizeof(int64_t);
+      i64Values.resize(count);
+      std::memcpy(i64Values.data(), raw.data(), raw.size());
+      return DenseElementsAttr::get(tensorType, ArrayRef<int64_t>(i64Values));
+    }
+    size_t count = raw.size() / sizeof(int32_t);
+    SmallVector<int32_t> i32Values(count);
+    std::memcpy(i32Values.data(), raw.data(), raw.size());
+    return DenseElementsAttr::get(tensorType, ArrayRef<int32_t>(i32Values));
+  }
+
+  return DenseElementsAttr();
+}
+
+FailureOr<SmallVector<int64_t>> getConstantI64Values(Value value) {
+  Attribute attr;
+  if (!matchPattern(value, m_Constant(&attr)))
+    return failure();
+  if (auto dense = dyn_cast<DenseIntElementsAttr>(attr)) {
+    SmallVector<int64_t> values;
+    values.reserve(dense.getNumElements());
+    for (APInt v : dense.getValues<APInt>())
+      values.push_back(v.getSExtValue());
+    return values;
+  }
+  return failure();
+}
+
+Value createUnaryElementwise(OpBuilder &builder, Location loc, RankedTensorType resultType,
+                             Value input, ArrayRef<Value> dynamicDims,
+                             function_ref<Value(OpBuilder &, Location, Value)> bodyBuilder) {
+  Value output = createEmptyTensor(builder, loc, resultType, dynamicDims);
+  int64_t rank = resultType.getRank();
+  SmallVector<AffineMap> indexingMaps(
+      2, AffineMap::getMultiDimIdentityMap(rank, builder.getContext()));
+  SmallVector<utils::IteratorType> iteratorTypes(rank, utils::IteratorType::parallel);
+  auto genericOp = linalg::GenericOp::create(
+      builder, loc, TypeRange{resultType}, ValueRange{input}, ValueRange{output},
+      indexingMaps, iteratorTypes,
+      [&](OpBuilder &nestedBuilder, Location bodyLoc, ValueRange args) {
+        Value result = bodyBuilder(nestedBuilder, bodyLoc, args[0]);
+        linalg::YieldOp::create(nestedBuilder, bodyLoc, result);
+      });
+  return genericOp.getResult(0);
+}
+
+Value createBinaryElementwise(OpBuilder &builder, Location loc, RankedTensorType resultType,
+                              Value lhs, Value rhs, ArrayRef<Value> dynamicDims,
+                              function_ref<Value(OpBuilder &, Location, Value, Value)> bodyBuilder) {
+  auto lhsType = cast<RankedTensorType>(lhs.getType());
+  auto rhsType = cast<RankedTensorType>(rhs.getType());
+  Value output = createEmptyTensor(builder, loc, resultType, dynamicDims);
+  int64_t rank = resultType.getRank();
+  auto buildMap = [&](RankedTensorType inputType) {
+    int64_t inRank = inputType.getRank();
+    if (inRank == 0)
+      return AffineMap::get(rank, 0, {}, builder.getContext());
+    SmallVector<AffineExpr> exprs;
+    int64_t leading = rank - inRank;
+    for (int64_t i = 0; i < inRank; ++i) {
+      int64_t outDim = leading + i;
+      if (!inputType.isDynamicDim(i) && inputType.getShape()[i] == 1 &&
+          (resultType.isDynamicDim(outDim) || resultType.getShape()[outDim] != 1)) {
+        exprs.push_back(getAffineConstantExpr(0, builder.getContext()));
+      } else {
+        exprs.push_back(getAffineDimExpr(outDim, builder.getContext()));
+      }
+    }
+    return AffineMap::get(rank, 0, exprs, builder.getContext());
+  };
+  SmallVector<AffineMap> indexingMaps = {
+      buildMap(lhsType), buildMap(rhsType),
+      AffineMap::getMultiDimIdentityMap(rank, builder.getContext())};
+  SmallVector<utils::IteratorType> iteratorTypes(rank, utils::IteratorType::parallel);
+  auto genericOp = linalg::GenericOp::create(
+      builder, loc, TypeRange{resultType}, ValueRange{lhs, rhs}, ValueRange{output},
+      indexingMaps, iteratorTypes,
+      [&](OpBuilder &nestedBuilder, Location bodyLoc, ValueRange args) {
+        Value result = bodyBuilder(nestedBuilder, bodyLoc, args[0], args[1]);
+        linalg::YieldOp::create(nestedBuilder, bodyLoc, result);
+      });
+  return genericOp.getResult(0);
 }
 
 } // namespace
@@ -498,6 +810,187 @@ bool ONNXMLIREmitter::emitDiv(
   return true;
 }
 
+bool ONNXMLIREmitter::emitMatMul(
+    const onnx::NodeProto &node,
+    llvm::StringMap<Value> &valueMap,
+    llvm::StringMap<RankedTensorType> &tensorTypes) {
+  auto loc = builder->getUnknownLoc();
+
+  if (node.input_size() != 2 || node.output_size() != 1) {
+    setError("MatMul expects exactly 2 inputs and 1 output");
+    return false;
+  }
+
+  Value lhs = lookupMappedValue(node.input(0), valueMap);
+  if (!lhs) {
+    setError("MatMul lhs value not found in emitter environment: " + node.input(0));
+    return false;
+  }
+
+  Value rhs = lookupMappedValue(node.input(1), valueMap);
+  if (!rhs) {
+    setError("MatMul rhs value not found in emitter environment: " + node.input(1));
+    return false;
+  }
+
+  auto resultType = lookupTensorType(node.output(0), tensorTypes);
+  if (!resultType) {
+    setError("Missing output tensor type for MatMul output: " + node.output(0));
+    return false;
+  }
+
+  auto matmulOp = builder->create<MatMulOp>(loc, resultType, lhs, rhs);
+  valueMap[node.output(0)] = matmulOp.getResult();
+  return true;
+}
+
+bool ONNXMLIREmitter::emitPow(
+    const onnx::NodeProto &node,
+    llvm::StringMap<Value> &valueMap,
+    llvm::StringMap<RankedTensorType> &tensorTypes) {
+  auto loc = builder->getUnknownLoc();
+  if (node.input_size() != 2 || node.output_size() != 1) {
+    setError("Pow expects exactly 2 inputs and 1 output");
+    return false;
+  }
+  Value lhs = lookupMappedValue(node.input(0), valueMap);
+  Value rhs = lookupMappedValue(node.input(1), valueMap);
+  auto resultType = lookupTensorType(node.output(0), tensorTypes);
+  if (!lhs || !rhs || !resultType) {
+    setError("Pow operands or result type missing");
+    return false;
+  }
+  SmallVector<Value> dynamicDims =
+      materializeBroadcastedDynamicDims(*builder, loc, resultType, lhs, rhs);
+  Value result = createBinaryElementwise(
+      *builder, loc, resultType, lhs, rhs, dynamicDims,
+      [&](OpBuilder &nestedBuilder, Location bodyLoc, Value lhsVal, Value rhsVal) {
+        return Value(math::PowFOp::create(nestedBuilder, bodyLoc, lhsVal, rhsVal));
+      });
+  valueMap[node.output(0)] = result;
+  return true;
+}
+
+bool ONNXMLIREmitter::emitNeg(
+    const onnx::NodeProto &node,
+    llvm::StringMap<Value> &valueMap,
+    llvm::StringMap<RankedTensorType> &tensorTypes) {
+  auto loc = builder->getUnknownLoc();
+  if (node.input_size() != 1 || node.output_size() != 1) {
+    setError("Neg expects exactly 1 input and 1 output");
+    return false;
+  }
+  Value input = lookupMappedValue(node.input(0), valueMap);
+  auto resultType = lookupTensorType(node.output(0), tensorTypes);
+  if (!input || !resultType) {
+    setError("Neg input or result type missing");
+    return false;
+  }
+  SmallVector<Value> dynamicDims = materializeDynamicDims(
+      *builder, loc, resultType,
+      [&](int64_t dim) { return tensor::DimOp::create(*builder, loc, input, dim); });
+  Type elemType = resultType.getElementType();
+  Value result = createUnaryElementwise(
+      *builder, loc, resultType, input, dynamicDims,
+      [&](OpBuilder &nestedBuilder, Location bodyLoc, Value arg) {
+        if (isa<FloatType>(elemType))
+          return Value(arith::NegFOp::create(nestedBuilder, bodyLoc, arg));
+        return Value(arith::SubIOp::create(
+            nestedBuilder, bodyLoc,
+            createScalarConstant(nestedBuilder, bodyLoc, elemType, 0.0, 0), arg));
+      });
+  valueMap[node.output(0)] = result;
+  return true;
+}
+
+bool ONNXMLIREmitter::emitAnd(
+    const onnx::NodeProto &node,
+    llvm::StringMap<Value> &valueMap,
+    llvm::StringMap<RankedTensorType> &tensorTypes) {
+  auto loc = builder->getUnknownLoc();
+  if (node.input_size() != 2 || node.output_size() != 1) {
+    setError("And expects exactly 2 inputs and 1 output");
+    return false;
+  }
+  Value lhs = lookupMappedValue(node.input(0), valueMap);
+  Value rhs = lookupMappedValue(node.input(1), valueMap);
+  auto resultType = lookupTensorType(node.output(0), tensorTypes);
+  if (!lhs || !rhs || !resultType) {
+    setError("And operands or result type missing");
+    return false;
+  }
+  SmallVector<Value> dynamicDims =
+      materializeBroadcastedDynamicDims(*builder, loc, resultType, lhs, rhs);
+  Value result = createBinaryElementwise(
+      *builder, loc, resultType, lhs, rhs, dynamicDims,
+      [&](OpBuilder &nestedBuilder, Location bodyLoc, Value lhsVal, Value rhsVal) {
+        return Value(arith::AndIOp::create(nestedBuilder, bodyLoc, lhsVal, rhsVal));
+      });
+  valueMap[node.output(0)] = result;
+  return true;
+}
+
+bool ONNXMLIREmitter::emitLessOrEqual(
+    const onnx::NodeProto &node,
+    llvm::StringMap<Value> &valueMap,
+    llvm::StringMap<RankedTensorType> &tensorTypes) {
+  auto loc = builder->getUnknownLoc();
+  if (node.input_size() != 2 || node.output_size() != 1) {
+    setError("LessOrEqual expects exactly 2 inputs and 1 output");
+    return false;
+  }
+  Value lhs = lookupMappedValue(node.input(0), valueMap);
+  Value rhs = lookupMappedValue(node.input(1), valueMap);
+  auto resultType = lookupTensorType(node.output(0), tensorTypes);
+  if (!lhs || !rhs || !resultType) {
+    setError("LessOrEqual operands or result type missing");
+    return false;
+  }
+  Type cmpType = cast<RankedTensorType>(lhs.getType()).getElementType();
+  SmallVector<Value> dynamicDims =
+      materializeBroadcastedDynamicDims(*builder, loc, resultType, lhs, rhs);
+  Value result = createBinaryElementwise(
+      *builder, loc, resultType, lhs, rhs, dynamicDims,
+      [&](OpBuilder &nestedBuilder, Location bodyLoc, Value lhsVal, Value rhsVal) {
+        if (isa<FloatType>(cmpType)) {
+          return Value(arith::CmpFOp::create(
+              nestedBuilder, bodyLoc, arith::CmpFPredicate::OLE, lhsVal, rhsVal));
+        }
+        return Value(arith::CmpIOp::create(
+            nestedBuilder, bodyLoc, arith::CmpIPredicate::sle, lhsVal, rhsVal));
+      });
+  valueMap[node.output(0)] = result;
+  return true;
+}
+
+bool ONNXMLIREmitter::emitIsNaN(
+    const onnx::NodeProto &node,
+    llvm::StringMap<Value> &valueMap,
+    llvm::StringMap<RankedTensorType> &tensorTypes) {
+  auto loc = builder->getUnknownLoc();
+  if (node.input_size() != 1 || node.output_size() != 1) {
+    setError("IsNaN expects exactly 1 input and 1 output");
+    return false;
+  }
+  Value input = lookupMappedValue(node.input(0), valueMap);
+  auto resultType = lookupTensorType(node.output(0), tensorTypes);
+  if (!input || !resultType) {
+    setError("IsNaN input or result type missing");
+    return false;
+  }
+  SmallVector<Value> dynamicDims = materializeDynamicDims(
+      *builder, loc, resultType,
+      [&](int64_t dim) { return tensor::DimOp::create(*builder, loc, input, dim); });
+  Value result = createUnaryElementwise(
+      *builder, loc, resultType, input, dynamicDims,
+      [&](OpBuilder &nestedBuilder, Location bodyLoc, Value arg) {
+        return Value(arith::CmpFOp::create(
+            nestedBuilder, bodyLoc, arith::CmpFPredicate::UNO, arg, arg));
+      });
+  valueMap[node.output(0)] = result;
+  return true;
+}
+
 bool ONNXMLIREmitter::emitEqual(
     const onnx::NodeProto &node,
     llvm::StringMap<Value> &valueMap,
@@ -589,6 +1082,67 @@ bool ONNXMLIREmitter::emitExpand(
 
   auto expandOp = builder->create<ExpandOp>(loc, resultType, input, shape);
   valueMap[node.output(0)] = expandOp.getResult();
+  return true;
+}
+
+bool ONNXMLIREmitter::emitGather(
+    const onnx::NodeProto &node,
+    llvm::StringMap<Value> &valueMap,
+    llvm::StringMap<RankedTensorType> &tensorTypes) {
+  auto loc = builder->getUnknownLoc();
+  if (node.input_size() != 2 || node.output_size() != 1) {
+    setError("Gather expects exactly 2 inputs and 1 output");
+    return false;
+  }
+  Value data = lookupMappedValue(node.input(0), valueMap);
+  Value indices = lookupMappedValue(node.input(1), valueMap);
+  auto resultType = lookupTensorType(node.output(0), tensorTypes);
+  if (!data || !indices || !resultType) {
+    setError("Gather operands or result type missing");
+    return false;
+  }
+  auto dataType = dyn_cast<RankedTensorType>(data.getType());
+  auto indicesType = dyn_cast<RankedTensorType>(indices.getType());
+  if (!dataType || !indicesType) {
+    setError("Gather expects ranked tensors");
+    return false;
+  }
+  int64_t axis = getI64AttrFromNode(node, "axis", 0);
+  if (axis < 0)
+    axis += dataType.getRank();
+  auto gatherOp = builder->create<GatherOp>(
+      loc, resultType, data, indices, builder->getI64IntegerAttr(axis));
+  valueMap[node.output(0)] = gatherOp.getResult();
+  return true;
+}
+
+bool ONNXMLIREmitter::emitGatherElements(
+    const onnx::NodeProto &node,
+    llvm::StringMap<Value> &valueMap,
+    llvm::StringMap<RankedTensorType> &tensorTypes) {
+  auto loc = builder->getUnknownLoc();
+  if (node.input_size() != 2 || node.output_size() != 1) {
+    setError("GatherElements expects exactly 2 inputs and 1 output");
+    return false;
+  }
+  Value data = lookupMappedValue(node.input(0), valueMap);
+  Value indices = lookupMappedValue(node.input(1), valueMap);
+  auto resultType = lookupTensorType(node.output(0), tensorTypes);
+  if (!data || !indices || !resultType) {
+    setError("GatherElements operands or result type missing");
+    return false;
+  }
+  auto indicesType = dyn_cast<RankedTensorType>(indices.getType());
+  if (!indicesType) {
+    setError("GatherElements expects ranked indices tensor");
+    return false;
+  }
+  int64_t axis = getI64AttrFromNode(node, "axis", 0);
+  if (axis < 0)
+    axis += indicesType.getRank();
+  auto gatherOp = builder->create<GatherElementsOp>(
+      loc, resultType, data, indices, builder->getI64IntegerAttr(axis));
+  valueMap[node.output(0)] = gatherOp.getResult();
   return true;
 }
 
@@ -1012,6 +1566,81 @@ bool ONNXMLIREmitter::emitReduceMean(
   return true;
 }
 
+bool ONNXMLIREmitter::emitReduceMax(
+    const onnx::NodeProto &node,
+    llvm::StringMap<Value> &valueMap,
+    llvm::StringMap<RankedTensorType> &tensorTypes) {
+  auto loc = builder->getUnknownLoc();
+  if (node.input_size() < 1 || node.output_size() != 1) {
+    setError("ReduceMax expects at least 1 input and exactly 1 output");
+    return false;
+  }
+  Value input = lookupMappedValue(node.input(0), valueMap);
+  auto resultType = lookupTensorType(node.output(0), tensorTypes);
+  if (!input || !resultType) {
+    setError("ReduceMax input or result type missing");
+    return false;
+  }
+  auto inputType = cast<RankedTensorType>(input.getType());
+  SmallVector<int64_t> axes;
+  if (node.input_size() >= 2 && !node.input(1).empty()) {
+    auto it = i64TensorLiterals.find(node.input(1));
+    if (it == i64TensorLiterals.end()) {
+      setError("ReduceMax axes must be a constant integer tensor");
+      return false;
+    }
+    axes = it->second;
+  } else {
+    for (const auto &attr : node.attribute()) {
+      if (attr.name() == "axes" && attr.ints_size() > 0) {
+        for (auto axis : attr.ints())
+          axes.push_back(axis);
+      }
+    }
+  }
+  if (axes.empty()) {
+    for (int64_t axis = 0; axis < inputType.getRank(); ++axis)
+      axes.push_back(axis);
+  }
+  for (int64_t &axis : axes) {
+    if (axis < 0)
+      axis += inputType.getRank();
+  }
+  SmallVector<int64_t> keptDims;
+  for (int64_t dim = 0; dim < inputType.getRank(); ++dim) {
+    if (!llvm::is_contained(axes, dim))
+      keptDims.push_back(dim);
+  }
+  SmallVector<Value> dynamicDims = materializeDynamicDims(
+      *builder, loc, resultType,
+      [&](int64_t dim) { return tensor::DimOp::create(*builder, loc, input, keptDims[dim]); });
+  Value init = createEmptyTensor(*builder, loc, resultType, dynamicDims);
+  Type elemType = resultType.getElementType();
+  Attribute minAttr;
+  if (auto floatType = dyn_cast<FloatType>(elemType)) {
+    minAttr = builder->getFloatAttr(floatType, -std::numeric_limits<double>::infinity());
+  } else if (auto intType = dyn_cast<IntegerType>(elemType)) {
+    minAttr = builder->getIntegerAttr(intType, llvm::APInt::getSignedMinValue(intType.getWidth()));
+  } else {
+    setError("ReduceMax supports only float/int element types");
+    return false;
+  }
+  Value seed = arith::ConstantOp::create(*builder, loc, cast<TypedAttr>(minAttr));
+  init = linalg::FillOp::create(*builder, loc, seed, init).getResult(0);
+  auto reduceOp = linalg::ReduceOp::create(
+      *builder, loc, ValueRange{input}, ValueRange{init}, axes,
+      [&](OpBuilder &nestedBuilder, Location bodyLoc, ValueRange args) {
+        Value result;
+        if (isa<FloatType>(elemType))
+          result = arith::MaximumFOp::create(nestedBuilder, bodyLoc, args[0], args[1]);
+        else
+          result = arith::MaxSIOp::create(nestedBuilder, bodyLoc, args[0], args[1]);
+        linalg::YieldOp::create(nestedBuilder, bodyLoc, result);
+      });
+  valueMap[node.output(0)] = reduceOp.getResult(0);
+  return true;
+}
+
 bool ONNXMLIREmitter::emitReduceSum(
     const onnx::NodeProto &node,
     llvm::StringMap<Value> &valueMap,
@@ -1073,6 +1702,38 @@ bool ONNXMLIREmitter::emitReduceSum(
   return true;
 }
 
+bool ONNXMLIREmitter::emitResize(
+    const onnx::NodeProto &node,
+    llvm::StringMap<Value> &valueMap,
+    llvm::StringMap<RankedTensorType> &tensorTypes) {
+  auto loc = builder->getUnknownLoc();
+  if (node.input_size() < 3 || node.output_size() != 1) {
+    setError("Resize expects at least 3 inputs and exactly 1 output");
+    return false;
+  }
+  Value input = lookupMappedValue(node.input(0), valueMap);
+  Value scales = lookupMappedValue(node.input(2), valueMap);
+  auto resultType = lookupTensorType(node.output(0), tensorTypes);
+  if (!input || !scales || !resultType) {
+    setError("Resize operands or result type missing");
+    return false;
+  }
+  if (getStringAttrFromNode(node, "mode", "nearest") != "nearest" ||
+      getStringAttrFromNode(node, "coordinate_transformation_mode", "asymmetric") != "asymmetric" ||
+      getStringAttrFromNode(node, "nearest_mode", "floor") != "floor") {
+    setError("Resize currently supports only nearest/asymmetric/floor");
+    return false;
+  }
+  auto resizeOp = builder->create<ResizeOp>(
+      loc, resultType, input, scales,
+      builder->getStringAttr(getStringAttrFromNode(node, "mode", "nearest")),
+      builder->getStringAttr(getStringAttrFromNode(
+          node, "coordinate_transformation_mode", "asymmetric")),
+      builder->getStringAttr(getStringAttrFromNode(node, "nearest_mode", "floor")));
+  valueMap[node.output(0)] = resizeOp.getResult();
+  return true;
+}
+
 bool ONNXMLIREmitter::emitReshape(
     const onnx::NodeProto &node,
     llvm::StringMap<Value> &valueMap,
@@ -1103,6 +1764,28 @@ bool ONNXMLIREmitter::emitReshape(
 
   auto reshapeOp = builder->create<ReshapeOp>(loc, resultType, input, shape);
   valueMap[node.output(0)] = reshapeOp.getResult();
+  return true;
+}
+
+bool ONNXMLIREmitter::emitRange(
+    const onnx::NodeProto &node,
+    llvm::StringMap<Value> &valueMap,
+    llvm::StringMap<RankedTensorType> &tensorTypes) {
+  auto loc = builder->getUnknownLoc();
+  if (node.input_size() != 3 || node.output_size() != 1) {
+    setError("Range expects exactly 3 inputs and 1 output");
+    return false;
+  }
+  Value start = lookupMappedValue(node.input(0), valueMap);
+  Value limit = lookupMappedValue(node.input(1), valueMap);
+  Value delta = lookupMappedValue(node.input(2), valueMap);
+  auto resultType = lookupTensorType(node.output(0), tensorTypes);
+  if (!start || !limit || !delta || !resultType) {
+    setError("Range operands or result type missing");
+    return false;
+  }
+  auto rangeOp = builder->create<RangeOp>(loc, resultType, start, limit, delta);
+  valueMap[node.output(0)] = rangeOp.getResult();
   return true;
 }
 
@@ -1209,6 +1892,10 @@ bool ONNXMLIREmitter::emitSlice(
     return false;
   }
 
+  // gawee.slice expects all four index tensors explicitly:
+  //   starts, ends, axes, steps
+  // ONNX Slice can omit axes and steps, so the emitter may need to synthesize
+  // those missing tensors before it can build the gawee op.
   auto makeI64TensorConst = [&](ArrayRef<int64_t> values) -> Value {
     auto tensorType =
         RankedTensorType::get({static_cast<int64_t>(values.size())},
@@ -1217,6 +1904,10 @@ bool ONNXMLIREmitter::emitSlice(
     return arith::ConstantOp::create(*builder, loc, tensorType, attr);
   };
 
+  // When ONNX omits axes/steps, their lengths must match the number of slice
+  // entries. The easiest source for that count is the rank-1 length of
+  // `starts`. If `starts` is not statically shaped, we cannot manufacture a
+  // well-formed default tensor here.
   auto startsType = dyn_cast<RankedTensorType>(starts.getType());
   int64_t numSlices = startsType && startsType.getRank() == 1 &&
                               !startsType.isDynamicDim(0)
@@ -1231,6 +1922,7 @@ bool ONNXMLIREmitter::emitSlice(
       return false;
     }
   } else {
+    // ONNX default: if axes is absent, slice along axes [0, 1, 2, ...].
     if (numSlices < 0) {
       setError("Slice cannot synthesize default axes without static starts length");
       return false;
@@ -1249,6 +1941,7 @@ bool ONNXMLIREmitter::emitSlice(
       return false;
     }
   } else {
+    // ONNX default: if steps is absent, every slice step is 1.
     if (numSlices < 0) {
       setError("Slice cannot synthesize default steps without static starts length");
       return false;
@@ -1323,6 +2016,447 @@ bool ONNXMLIREmitter::emitSqrt(
 
   auto sqrtOp = builder->create<SqrtOp>(loc, resultType, input);
   valueMap[node.output(0)] = sqrtOp.getResult();
+  return true;
+}
+
+bool ONNXMLIREmitter::emitSin(
+    const onnx::NodeProto &node,
+    llvm::StringMap<Value> &valueMap,
+    llvm::StringMap<RankedTensorType> &tensorTypes) {
+  auto loc = builder->getUnknownLoc();
+  if (node.input_size() != 1 || node.output_size() != 1) {
+    setError("Sin expects exactly 1 input and 1 output");
+    return false;
+  }
+  Value input = lookupMappedValue(node.input(0), valueMap);
+  auto resultType = lookupTensorType(node.output(0), tensorTypes);
+  if (!input || !resultType) {
+    setError("Sin input or result type missing");
+    return false;
+  }
+  SmallVector<Value> dynamicDims = materializeDynamicDims(
+      *builder, loc, resultType,
+      [&](int64_t dim) { return tensor::DimOp::create(*builder, loc, input, dim); });
+  valueMap[node.output(0)] = createUnaryElementwise(
+      *builder, loc, resultType, input, dynamicDims,
+      [&](OpBuilder &nestedBuilder, Location bodyLoc, Value arg) {
+        return Value(math::SinOp::create(nestedBuilder, bodyLoc, arg));
+      });
+  return true;
+}
+
+bool ONNXMLIREmitter::emitCos(
+    const onnx::NodeProto &node,
+    llvm::StringMap<Value> &valueMap,
+    llvm::StringMap<RankedTensorType> &tensorTypes) {
+  auto loc = builder->getUnknownLoc();
+  if (node.input_size() != 1 || node.output_size() != 1) {
+    setError("Cos expects exactly 1 input and 1 output");
+    return false;
+  }
+  Value input = lookupMappedValue(node.input(0), valueMap);
+  auto resultType = lookupTensorType(node.output(0), tensorTypes);
+  if (!input || !resultType) {
+    setError("Cos input or result type missing");
+    return false;
+  }
+  SmallVector<Value> dynamicDims = materializeDynamicDims(
+      *builder, loc, resultType,
+      [&](int64_t dim) { return tensor::DimOp::create(*builder, loc, input, dim); });
+  valueMap[node.output(0)] = createUnaryElementwise(
+      *builder, loc, resultType, input, dynamicDims,
+      [&](OpBuilder &nestedBuilder, Location bodyLoc, Value arg) {
+        return Value(math::CosOp::create(nestedBuilder, bodyLoc, arg));
+      });
+  return true;
+}
+
+bool ONNXMLIREmitter::emitSplit(
+    const onnx::NodeProto &node,
+    llvm::StringMap<Value> &valueMap,
+    llvm::StringMap<RankedTensorType> &tensorTypes) {
+  auto loc = builder->getUnknownLoc();
+  if (node.input_size() < 1 || node.output_size() < 1) {
+    setError("Split expects at least 1 input and 1 output");
+    return false;
+  }
+  Value input = lookupMappedValue(node.input(0), valueMap);
+  if (!input) {
+    setError("Split input missing");
+    return false;
+  }
+  auto inputType = dyn_cast<RankedTensorType>(input.getType());
+  if (!inputType) {
+    setError("Split expects ranked input");
+    return false;
+  }
+  int64_t axis = getI64AttrFromNode(node, "axis", 0);
+  if (axis < 0)
+    axis += inputType.getRank();
+
+  SmallVector<int64_t> splitSizes;
+  if (node.input_size() >= 2 && !node.input(1).empty()) {
+    auto it = i64TensorLiterals.find(node.input(1));
+    if (it == i64TensorLiterals.end()) {
+      setError("Split sizes must be constant integer tensor");
+      return false;
+    }
+    splitSizes = it->second;
+  } else {
+    for (int i = 0; i < node.output_size(); ++i) {
+      auto resultType = lookupTensorType(node.output(i), tensorTypes);
+      splitSizes.push_back(resultType.getShape()[axis]);
+    }
+  }
+  SmallVector<Type> resultTypes;
+  resultTypes.reserve(node.output_size());
+  for (int i = 0; i < node.output_size(); ++i)
+    resultTypes.push_back(lookupTensorType(node.output(i), tensorTypes));
+  auto splitOp = builder->create<SplitOp>(
+      loc, TypeRange(resultTypes), input,
+      builder->getDenseI64ArrayAttr(splitSizes),
+      builder->getI64IntegerAttr(axis));
+  for (int i = 0; i < node.output_size(); ++i)
+    valueMap[node.output(i)] = splitOp->getResult(i);
+  return true;
+}
+
+bool ONNXMLIREmitter::emitTile(
+    const onnx::NodeProto &node,
+    llvm::StringMap<Value> &valueMap,
+    llvm::StringMap<RankedTensorType> &tensorTypes) {
+  auto loc = builder->getUnknownLoc();
+  if (node.input_size() != 2 || node.output_size() != 1) {
+    setError("Tile expects exactly 2 inputs and 1 output");
+    return false;
+  }
+  Value input = lookupMappedValue(node.input(0), valueMap);
+  Value repeats = lookupMappedValue(node.input(1), valueMap);
+  auto resultType = lookupTensorType(node.output(0), tensorTypes);
+  if (!input || !repeats || !resultType) {
+    setError("Tile operands or result type missing");
+    return false;
+  }
+  auto repeatValues = getConstantI64Values(repeats);
+  if (failed(repeatValues)) {
+    setError("Tile repeats must be constant integer tensor");
+    return false;
+  }
+  auto tileOp = builder->create<TileOp>(loc, resultType, input, repeats);
+  valueMap[node.output(0)] = tileOp.getResult();
+  return true;
+}
+
+bool ONNXMLIREmitter::emitConstant(
+    const onnx::NodeProto &node,
+    llvm::StringMap<Value> &valueMap,
+    llvm::StringMap<RankedTensorType> &tensorTypes) {
+  auto loc = builder->getUnknownLoc();
+  if (node.output_size() != 1) {
+    setError("Constant expects exactly 1 output");
+    return false;
+  }
+  for (const auto &attr : node.attribute()) {
+    if (attr.name() != "value" || !attr.has_t())
+      continue;
+    DenseElementsAttr dense = buildDenseElementsAttr(*builder, attr.t(), onnxDirectory);
+    if (!dense) {
+      std::string shapeText = "[";
+      for (int i = 0; i < attr.t().dims_size(); ++i) {
+        if (i)
+          shapeText += ",";
+        shapeText += std::to_string(attr.t().dims(i));
+      }
+      shapeText += "]";
+      setError("Unsupported Constant tensor payload: name=" + node.name() +
+               " dtype=" + std::to_string(attr.t().data_type()) +
+               " shape=" + shapeText);
+      return false;
+    }
+    Value constant = arith::ConstantOp::create(*builder, loc, dense.getType(), dense);
+    valueMap[node.output(0)] = constant;
+    SmallVector<int64_t> i64Values;
+    if (extractI64TensorLiteral(attr.t(), i64Values))
+      i64TensorLiterals[node.output(0)] = i64Values;
+    tensorTypes[node.output(0)] = cast<RankedTensorType>(dense.getType());
+    return true;
+  }
+  setError("Constant node without tensor value is unsupported");
+  return false;
+}
+
+bool ONNXMLIREmitter::emitConstantOfShape(
+    const onnx::NodeProto &node,
+    llvm::StringMap<Value> &valueMap,
+    llvm::StringMap<RankedTensorType> &tensorTypes) {
+  auto loc = builder->getUnknownLoc();
+  if (node.input_size() != 1 || node.output_size() != 1) {
+    setError("ConstantOfShape expects exactly 1 input and 1 output");
+    return false;
+  }
+  Value shape = lookupMappedValue(node.input(0), valueMap);
+  auto resultType = lookupTensorType(node.output(0), tensorTypes);
+  if (!shape || !resultType) {
+    setError("ConstantOfShape shape or result type missing");
+    return false;
+  }
+  SmallVector<Value> dynamicDims = materializeDynamicDims(
+      *builder, loc, resultType,
+      [&](int64_t dim) {
+        Value idx = arith::ConstantOp::create(*builder, loc, builder->getIndexAttr(dim));
+        SmallVector<Value> positions{idx};
+        return extractTensorScalarAsIndex(*builder, loc, shape, positions);
+      });
+  Attribute fillAttr = builder->getZeroAttr(resultType.getElementType());
+  for (const auto &attr : node.attribute()) {
+    if (attr.name() == "value" && attr.has_t()) {
+      DenseElementsAttr dense = buildDenseElementsAttr(*builder, attr.t(), onnxDirectory);
+      if (!dense) {
+        setError("Unsupported ConstantOfShape fill tensor");
+        return false;
+      }
+      if (dense.getNumElements() != 1) {
+        setError("ConstantOfShape fill tensor must be scalar");
+        return false;
+      }
+      if (auto floatDense = dyn_cast<DenseFPElementsAttr>(dense)) {
+        fillAttr = builder->getFloatAttr(
+            cast<FloatType>(resultType.getElementType()),
+            (*floatDense.getValues<APFloat>().begin()).convertToDouble());
+      } else if (auto intDense = dyn_cast<DenseIntElementsAttr>(dense)) {
+        fillAttr = builder->getIntegerAttr(
+            resultType.getElementType(),
+            (*intDense.getValues<APInt>().begin()).getSExtValue());
+      } else {
+        setError("Unsupported ConstantOfShape scalar attribute kind");
+        return false;
+      }
+    }
+  }
+  Value output = createEmptyTensor(*builder, loc, resultType, dynamicDims);
+  Value scalar = arith::ConstantOp::create(*builder, loc, cast<TypedAttr>(fillAttr));
+  valueMap[node.output(0)] =
+      linalg::FillOp::create(*builder, loc, scalar, output).getResult(0);
+  return true;
+}
+
+bool ONNXMLIREmitter::emitTopK(
+    const onnx::NodeProto &node,
+    llvm::StringMap<Value> &valueMap,
+    llvm::StringMap<RankedTensorType> &tensorTypes) {
+  auto loc = builder->getUnknownLoc();
+  if (node.input_size() != 2 || node.output_size() != 2) {
+    setError("TopK expects exactly 2 inputs and 2 outputs");
+    return false;
+  }
+  Value input = lookupMappedValue(node.input(0), valueMap);
+  Value kTensor = lookupMappedValue(node.input(1), valueMap);
+  auto valueType = lookupTensorType(node.output(0), tensorTypes);
+  auto indexType = lookupTensorType(node.output(1), tensorTypes);
+  if (!input || !kTensor || !valueType || !indexType) {
+    setError("TopK operands or result types missing");
+    return false;
+  }
+  auto inputType = dyn_cast<RankedTensorType>(input.getType());
+  if (!inputType || inputType.getRank() != 2) {
+    setError("TopK currently supports rank-2 input tensors only");
+    return false;
+  }
+  int64_t axis = getI64AttrFromNode(node, "axis", -1);
+  if (axis < 0)
+    axis += inputType.getRank();
+  if (axis != 1 || getI64AttrFromNode(node, "largest", 1) != 1 ||
+      getI64AttrFromNode(node, "sorted", 1) != 1) {
+    setError("TopK currently supports axis=-1, largest=1, sorted=1 only");
+    return false;
+  }
+  auto kValues = getConstantI64Values(kTensor);
+  if (failed(kValues) || kValues->empty()) {
+    setError("TopK requires constant k");
+    return false;
+  }
+  int64_t k = (*kValues)[0];
+  Type elemType = inputType.getElementType();
+  if (!isa<FloatType>(elemType)) {
+    setError("TopK currently supports floating-point inputs only");
+    return false;
+  }
+
+  SmallVector<Value> valueDynDims = materializeDynamicDims(
+      *builder, loc, valueType,
+      [&](int64_t dim) { return tensor::DimOp::create(*builder, loc, input, dim); });
+  SmallVector<Value> indexDynDims = materializeDynamicDims(
+      *builder, loc, indexType,
+      [&](int64_t dim) { return tensor::DimOp::create(*builder, loc, input, dim); });
+  Value valuesInit = createEmptyTensor(*builder, loc, valueType, valueDynDims);
+  Value indicesInit = createEmptyTensor(*builder, loc, indexType, indexDynDims);
+  Value negInf = arith::ConstantOp::create(
+      *builder, loc, builder->getFloatAttr(cast<FloatType>(elemType),
+                                           -std::numeric_limits<double>::infinity()));
+  Value zeroI64 = arith::ConstantOp::create(*builder, loc, builder->getI64IntegerAttr(0));
+  valuesInit = linalg::FillOp::create(*builder, loc, negInf, valuesInit).getResult(0);
+  indicesInit = linalg::FillOp::create(*builder, loc, zeroI64, indicesInit).getResult(0);
+
+  Value c0 = arith::ConstantOp::create(*builder, loc, builder->getIndexAttr(0));
+  Value c1 = arith::ConstantOp::create(*builder, loc, builder->getIndexAttr(1));
+  Value batchDim = tensor::DimOp::create(*builder, loc, input, 0);
+  Value inputLen = tensor::DimOp::create(*builder, loc, input, 1);
+  Value kIndex = arith::ConstantOp::create(*builder, loc, builder->getIndexAttr(k));
+
+  auto rowLoop = scf::ForOp::create(
+      *builder, loc, c0, batchDim, c1, ValueRange{valuesInit, indicesInit},
+      [&](OpBuilder &rowBuilder, Location rowLoc, Value row,
+          ValueRange rowState) {
+        auto rowValueType = RankedTensorType::get({k}, elemType);
+        auto rowIndexType = RankedTensorType::get({k}, rowBuilder.getI64Type());
+        Value rowValues = createEmptyTensor(rowBuilder, rowLoc, rowValueType);
+        Value rowIndices = createEmptyTensor(rowBuilder, rowLoc, rowIndexType);
+        rowValues = linalg::FillOp::create(rowBuilder, rowLoc, negInf, rowValues).getResult(0);
+        rowIndices = linalg::FillOp::create(rowBuilder, rowLoc, zeroI64, rowIndices).getResult(0);
+
+        auto colLoop = scf::ForOp::create(
+            rowBuilder, rowLoc, c0, inputLen, c1, ValueRange{rowValues, rowIndices},
+            [&](OpBuilder &colBuilder, Location colLoc, Value col,
+                ValueRange colState) {
+              Value value = tensor::ExtractOp::create(colBuilder, colLoc, input,
+                                                      ValueRange{row, col});
+              Value insertPosInit = kIndex;
+              auto scanLoop = scf::ForOp::create(
+                  colBuilder, colLoc, c0, kIndex, c1, ValueRange{insertPosInit},
+                  [&](OpBuilder &scanBuilder, Location scanLoc, Value j,
+                      ValueRange scanState) {
+                    Value currentPos = scanState[0];
+                    Value hasPos = arith::CmpIOp::create(
+                        scanBuilder, scanLoc, arith::CmpIPredicate::ult,
+                        currentPos, kIndex);
+                    Value existingValue = tensor::ExtractOp::create(
+                        scanBuilder, scanLoc, colState[0], ValueRange{j});
+                    Value existingIndex = tensor::ExtractOp::create(
+                        scanBuilder, scanLoc, colState[1], ValueRange{j});
+                    Value colI64 = arith::IndexCastOp::create(
+                        scanBuilder, scanLoc, scanBuilder.getI64Type(), col);
+                    Value isGreater = arith::CmpFOp::create(
+                        scanBuilder, scanLoc, arith::CmpFPredicate::OGT, value,
+                        existingValue);
+                    Value isEqual = arith::CmpFOp::create(
+                        scanBuilder, scanLoc, arith::CmpFPredicate::OEQ, value,
+                        existingValue);
+                    Value tieBreak = arith::CmpIOp::create(
+                        scanBuilder, scanLoc, arith::CmpIPredicate::slt, colI64,
+                        existingIndex);
+                    Value shouldInsert = arith::OrIOp::create(
+                        scanBuilder, scanLoc, isGreater,
+                        arith::AndIOp::create(scanBuilder, scanLoc, isEqual, tieBreak));
+                    Value finalCond = arith::AndIOp::create(
+                        scanBuilder, scanLoc,
+                        arith::XOrIOp::create(
+                            scanBuilder, scanLoc, hasPos,
+                            arith::ConstantOp::create(scanBuilder, scanLoc,
+                                                      scanBuilder.getI1Type(),
+                                                      scanBuilder.getBoolAttr(true))),
+                        shouldInsert);
+                    Value nextPos = arith::SelectOp::create(scanBuilder, scanLoc,
+                                                            finalCond, j, currentPos);
+                    scf::YieldOp::create(scanBuilder, scanLoc, nextPos);
+                  });
+              Value insertPos = scanLoop.getResult(0);
+              auto newValues = tensor::GenerateOp::create(
+                  colBuilder, colLoc, rowValueType, ValueRange{},
+                  [&](OpBuilder &genBuilder, Location genLoc, ValueRange ivs) {
+                    Value pos = ivs[0];
+                    Value hasInsert = arith::CmpIOp::create(
+                        genBuilder, genLoc, arith::CmpIPredicate::ult, insertPos, kIndex);
+                    Value equalsInsert = arith::CmpIOp::create(
+                        genBuilder, genLoc, arith::CmpIPredicate::eq, pos, insertPos);
+                    Value beforeInsert = arith::CmpIOp::create(
+                        genBuilder, genLoc, arith::CmpIPredicate::slt, pos, insertPos);
+                    Value prevPos = arith::SubIOp::create(genBuilder, genLoc, pos, c1);
+                    Value sourcePos = arith::SelectOp::create(genBuilder, genLoc,
+                                                              beforeInsert, pos, prevPos);
+                    Value oldValue = tensor::ExtractOp::create(
+                        genBuilder, genLoc, colState[0], ValueRange{sourcePos});
+                    Value insertedOrShifted = arith::SelectOp::create(
+                        genBuilder, genLoc, equalsInsert, value, oldValue);
+                    Value outValue = arith::SelectOp::create(
+                        genBuilder, genLoc, hasInsert, insertedOrShifted, oldValue);
+                    tensor::YieldOp::create(genBuilder, genLoc, outValue);
+                  });
+              auto newIndices = tensor::GenerateOp::create(
+                  colBuilder, colLoc, rowIndexType, ValueRange{},
+                  [&](OpBuilder &genBuilder, Location genLoc, ValueRange ivs) {
+                    Value pos = ivs[0];
+                    Value hasInsert = arith::CmpIOp::create(
+                        genBuilder, genLoc, arith::CmpIPredicate::ult, insertPos, kIndex);
+                    Value equalsInsert = arith::CmpIOp::create(
+                        genBuilder, genLoc, arith::CmpIPredicate::eq, pos, insertPos);
+                    Value beforeInsert = arith::CmpIOp::create(
+                        genBuilder, genLoc, arith::CmpIPredicate::slt, pos, insertPos);
+                    Value prevPos = arith::SubIOp::create(genBuilder, genLoc, pos, c1);
+                    Value sourcePos = arith::SelectOp::create(genBuilder, genLoc,
+                                                              beforeInsert, pos, prevPos);
+                    Value oldIndex = tensor::ExtractOp::create(
+                        genBuilder, genLoc, colState[1], ValueRange{sourcePos});
+                    Value colI64 = arith::IndexCastOp::create(
+                        genBuilder, genLoc, genBuilder.getI64Type(), col);
+                    Value insertedOrShifted = arith::SelectOp::create(
+                        genBuilder, genLoc, equalsInsert, colI64, oldIndex);
+                    Value outIndex = arith::SelectOp::create(
+                        genBuilder, genLoc, hasInsert, insertedOrShifted, oldIndex);
+                    tensor::YieldOp::create(genBuilder, genLoc, outIndex);
+                  });
+              scf::YieldOp::create(colBuilder, colLoc,
+                                   ValueRange{newValues.getResult(), newIndices.getResult()});
+            });
+
+        auto writeLoop = scf::ForOp::create(
+            rowBuilder, rowLoc, c0, kIndex, c1, ValueRange{rowState[0], rowState[1]},
+            [&](OpBuilder &writeBuilder, Location writeLoc, Value j,
+                ValueRange writeState) {
+              Value rowValue = tensor::ExtractOp::create(
+                  writeBuilder, writeLoc, colLoop.getResult(0), ValueRange{j});
+              Value rowIndex = tensor::ExtractOp::create(
+                  writeBuilder, writeLoc, colLoop.getResult(1), ValueRange{j});
+              Value nextValues = tensor::InsertOp::create(
+                  writeBuilder, writeLoc, rowValue, writeState[0], ValueRange{row, j});
+              Value nextIndices = tensor::InsertOp::create(
+                  writeBuilder, writeLoc, rowIndex, writeState[1], ValueRange{row, j});
+              scf::YieldOp::create(writeBuilder, writeLoc,
+                                   ValueRange{nextValues, nextIndices});
+            });
+        scf::YieldOp::create(rowBuilder, rowLoc, writeLoop.getResults());
+      });
+
+  valueMap[node.output(0)] = rowLoop.getResult(0);
+  valueMap[node.output(1)] = rowLoop.getResult(1);
+  return true;
+}
+
+bool ONNXMLIREmitter::emitMod(
+    const onnx::NodeProto &node,
+    llvm::StringMap<Value> &valueMap,
+    llvm::StringMap<RankedTensorType> &tensorTypes) {
+  auto loc = builder->getUnknownLoc();
+  if (node.input_size() != 2 || node.output_size() != 1) {
+    setError("Mod expects exactly 2 inputs and 1 output");
+    return false;
+  }
+  Value lhs = lookupMappedValue(node.input(0), valueMap);
+  Value rhs = lookupMappedValue(node.input(1), valueMap);
+  auto resultType = lookupTensorType(node.output(0), tensorTypes);
+  if (!lhs || !rhs || !resultType) {
+    setError("Mod operands or result type missing");
+    return false;
+  }
+  Type elemType = cast<RankedTensorType>(lhs.getType()).getElementType();
+  SmallVector<Value> dynamicDims =
+      materializeBroadcastedDynamicDims(*builder, loc, resultType, lhs, rhs);
+  valueMap[node.output(0)] = createBinaryElementwise(
+      *builder, loc, resultType, lhs, rhs, dynamicDims,
+      [&](OpBuilder &nestedBuilder, Location bodyLoc, Value lhsVal, Value rhsVal) {
+        if (isa<FloatType>(elemType))
+          return Value(arith::RemFOp::create(nestedBuilder, bodyLoc, lhsVal, rhsVal));
+        return Value(arith::RemSIOp::create(nestedBuilder, bodyLoc, lhsVal, rhsVal));
+      });
   return true;
 }
 
@@ -1587,19 +2721,14 @@ bool ONNXMLIREmitter::emitFlatten(
     return false;
   }
 
-  int64_t axis = getI64AttrFromNode(node, "axis", 1);
-  if (axis != 1) {
-    setError("Flatten currently supports ONNX axis=1 only with gawee.flatten");
-    return false;
-  }
-
-  auto flattenOp = builder->create<FlattenOp>(
-      loc,
-      resultType,
-      input,
-      builder->getI64IntegerAttr(1),
-      builder->getI64IntegerAttr(-1));
-  valueMap[node.output(0)] = flattenOp.getResult();
+  SmallVector<int64_t> shapeValues(resultType.getShape().begin(),
+                                   resultType.getShape().end());
+  auto shapeType = RankedTensorType::get(
+      {static_cast<int64_t>(shapeValues.size())}, builder->getI64Type());
+  auto shapeAttr = DenseElementsAttr::get(shapeType, ArrayRef<int64_t>(shapeValues));
+  Value shapeValue = arith::ConstantOp::create(*builder, loc, shapeType, shapeAttr);
+  auto reshapeOp = builder->create<ReshapeOp>(loc, resultType, input, shapeValue);
+  valueMap[node.output(0)] = reshapeOp.getResult();
   return true;
 }
 
@@ -1614,6 +2743,10 @@ bool ONNXMLIREmitter::emitLinearLike(
     return false;
   }
 
+  // gawee.linear models the common inference form:
+  //   Y = X * W^T + B
+  // The current Gemm support is intentionally narrow so that Gemm and MatMul
+  // can both funnel into that same contract without extra rewrites.
   if (node.op_type() == "Gemm") {
     if (getI64AttrFromNode(node, "transA", 0) != 0 ||
         getI64AttrFromNode(node, "transB", 1) != 1 ||
@@ -1643,12 +2776,21 @@ bool ONNXMLIREmitter::emitLinearLike(
 
   Value biasValue;
   if (node.input_size() >= 3 && !node.input(2).empty()) {
+    // If ONNX already provides bias, forwarding it is straightforward.
     biasValue = lookupMappedValue(node.input(2), valueMap);
     if (!biasValue) {
       setError("LinearLike bias value not found in emitter environment: " + node.input(2));
       return false;
     }
   } else {
+    // gawee.linear always takes a bias operand, so MatMul / bias-less Gemm
+    // must be rewritten into "same op, but with an explicit zero bias".
+    //
+    // We need the output width to build that tensor:
+    //   bias shape = [outFeatures]
+    // Prefer weight[0] because linear weights are typically [outFeatures,
+    // inFeatures]. If that is not statically known, fall back to the last
+    // dimension of the result type.
     int64_t outFeatures = -1;
     auto weightType = dyn_cast<RankedTensorType>(weight.getType());
     if (weightType && weightType.getRank() == 2 && !weightType.isDynamicDim(0)) {
@@ -1661,6 +2803,8 @@ bool ONNXMLIREmitter::emitLinearLike(
       return false;
     }
 
+    // Build a 1-D tensor<[outFeatures] x elemTy> filled with zeros so the
+    // downstream gawee.linear sees the same explicit 3-operand form every time.
     auto biasType = RankedTensorType::get({outFeatures}, resultType.getElementType());
     auto zeroAttr = DenseElementsAttr::get(
         biasType, builder->getZeroAttr(resultType.getElementType()));
@@ -1707,6 +2851,8 @@ OwningOpRef<ModuleOp> ONNXMLIREmitter::emitFromFile(llvm::StringRef onnxPath) {
   }
 
   const auto &graph = model.graph();
+  onnxDirectory = std::filesystem::path(std::string(onnxPath)).parent_path().string();
+  i64TensorLiterals.clear();
 
   auto loc = builder->getUnknownLoc();
   auto module = ModuleOp::create(loc);
@@ -1729,6 +2875,8 @@ OwningOpRef<ModuleOp> ONNXMLIREmitter::emitFromFile(llvm::StringRef onnxPath) {
       return builder->getIntegerType(64);
     case onnx::TensorProto_DataType_INT32:
       return builder->getIntegerType(32);
+    case onnx::TensorProto_DataType_BOOL:
+      return builder->getI1Type();
     default:
       return Type();
     }
@@ -1776,6 +2924,43 @@ OwningOpRef<ModuleOp> ONNXMLIREmitter::emitFromFile(llvm::StringRef onnxPath) {
     return RankedTensorType::get(shape, elementType);
   };
 
+  auto collectI64TensorLiteral = [&](const onnx::TensorProto &tensor) {
+    SmallVector<int64_t> values;
+    switch (tensor.data_type()) {
+    case onnx::TensorProto_DataType_INT64:
+      if (tensor.int64_data_size() > 0) {
+        values.reserve(tensor.int64_data_size());
+        for (auto value : tensor.int64_data())
+          values.push_back(value);
+      } else if (!tensor.raw_data().empty()) {
+        size_t count = tensor.raw_data().size() / sizeof(int64_t);
+        values.reserve(count);
+        auto *raw = reinterpret_cast<const int64_t *>(tensor.raw_data().data());
+        for (size_t i = 0; i < count; ++i)
+          values.push_back(raw[i]);
+      }
+      break;
+    case onnx::TensorProto_DataType_INT32:
+      if (tensor.int32_data_size() > 0) {
+        values.reserve(tensor.int32_data_size());
+        for (auto value : tensor.int32_data())
+          values.push_back(value);
+      } else if (!tensor.raw_data().empty()) {
+        size_t count = tensor.raw_data().size() / sizeof(int32_t);
+        values.reserve(count);
+        auto *raw = reinterpret_cast<const int32_t *>(tensor.raw_data().data());
+        for (size_t i = 0; i < count; ++i)
+          values.push_back(raw[i]);
+      }
+      break;
+    default:
+      break;
+    }
+
+    if (!values.empty())
+      i64TensorLiterals[tensor.name()] = values;
+  };
+
   // --- Collect types from ONNX graph -------------------------------------
   // We need names -> tensor types before creating the function signature.
   llvm::StringMap<RankedTensorType> tensorTypes;
@@ -1805,12 +2990,14 @@ OwningOpRef<ModuleOp> ONNXMLIREmitter::emitFromFile(llvm::StringRef onnxPath) {
       tensorTypes[initializer.name()] = type;
       initializerNames.insert(initializer.name());
     }
+    collectI64TensorLiteral(initializer);
   }
 
   // --- Build function signature ------------------------------------------
   // Convention for the scaffold:
   //   - graph inputs become function arguments
-  //   - initializers also become function arguments
+  //   - large runtime parameters (e.g. weights) remain function arguments
+  //   - small integer initializers used for shape/axes/steps become constants
   // This mirrors the current JSON emitter structure and keeps lowering simple
   // before deciding whether some constants should become arith.constant ops.
   SmallVector<Type> argTypes;
@@ -1830,6 +3017,9 @@ OwningOpRef<ModuleOp> ONNXMLIREmitter::emitFromFile(llvm::StringRef onnxPath) {
   }
 
   for (const auto &initializer : graph.initializer()) {
+    if (i64TensorLiterals.count(initializer.name()) != 0) {
+      continue;
+    }
     auto it = tensorTypes.find(initializer.name());
     if (it == tensorTypes.end()) {
       setError("Missing type information for ONNX initializer: " + initializer.name());
@@ -1860,8 +3050,37 @@ OwningOpRef<ModuleOp> ONNXMLIREmitter::emitFromFile(llvm::StringRef onnxPath) {
     valueMap[argNames[i]] = entryBlock->getArgument(i);
   }
 
+  for (const auto &initializer : graph.initializer()) {
+    auto literalIt = i64TensorLiterals.find(initializer.name());
+    if (literalIt == i64TensorLiterals.end()) {
+      continue;
+    }
+
+    auto typeIt = tensorTypes.find(initializer.name());
+    if (typeIt == tensorTypes.end()) {
+      setError("Missing type information for ONNX integer initializer: " +
+               initializer.name());
+      return nullptr;
+    }
+
+    auto tensorType = typeIt->second;
+    auto denseAttr = DenseIntElementsAttr::get(tensorType, literalIt->second);
+    Value constant = arith::ConstantOp::create(*builder, loc, tensorType, denseAttr);
+    valueMap[initializer.name()] = constant;
+  }
+
   // --- Emit nodes ---------------------------------------------------------
   for (const auto &node : graph.node()) {
+    if (node.op_type() == "Constant") {
+      if (!emitConstant(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "ConstantOfShape") {
+      if (!emitConstantOfShape(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
     if (node.op_type() == "Relu") {
       if (!emitRelu(node, valueMap, tensorTypes))
         return nullptr;
@@ -1872,7 +3091,12 @@ OwningOpRef<ModuleOp> ONNXMLIREmitter::emitFromFile(llvm::StringRef onnxPath) {
         return nullptr;
       continue;
     }
-    if (node.op_type() == "MatMul" || node.op_type() == "Gemm") {
+    if (node.op_type() == "MatMul") {
+      if (!emitMatMul(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Gemm") {
       if (!emitLinearLike(node, valueMap, tensorTypes))
         return nullptr;
       continue;
@@ -1907,8 +3131,33 @@ OwningOpRef<ModuleOp> ONNXMLIREmitter::emitFromFile(llvm::StringRef onnxPath) {
         return nullptr;
       continue;
     }
+    if (node.op_type() == "Pow") {
+      if (!emitPow(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Neg") {
+      if (!emitNeg(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
     if (node.op_type() == "Equal") {
       if (!emitEqual(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "And") {
+      if (!emitAnd(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "LessOrEqual") {
+      if (!emitLessOrEqual(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "IsNaN") {
+      if (!emitIsNaN(node, valueMap, tensorTypes))
         return nullptr;
       continue;
     }
@@ -1919,6 +3168,16 @@ OwningOpRef<ModuleOp> ONNXMLIREmitter::emitFromFile(llvm::StringRef onnxPath) {
     }
     if (node.op_type() == "Expand") {
       if (!emitExpand(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Gather") {
+      if (!emitGather(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "GatherElements") {
+      if (!emitGatherElements(node, valueMap, tensorTypes))
         return nullptr;
       continue;
     }
@@ -1977,13 +3236,28 @@ OwningOpRef<ModuleOp> ONNXMLIREmitter::emitFromFile(llvm::StringRef onnxPath) {
         return nullptr;
       continue;
     }
+    if (node.op_type() == "ReduceMax") {
+      if (!emitReduceMax(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
     if (node.op_type() == "ReduceSum") {
       if (!emitReduceSum(node, valueMap, tensorTypes))
         return nullptr;
       continue;
     }
+    if (node.op_type() == "Resize") {
+      if (!emitResize(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
     if (node.op_type() == "Reshape") {
       if (!emitReshape(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Range") {
+      if (!emitRange(node, valueMap, tensorTypes))
         return nullptr;
       continue;
     }
@@ -2012,6 +3286,21 @@ OwningOpRef<ModuleOp> ONNXMLIREmitter::emitFromFile(llvm::StringRef onnxPath) {
         return nullptr;
       continue;
     }
+    if (node.op_type() == "Sin") {
+      if (!emitSin(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Cos") {
+      if (!emitCos(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Split") {
+      if (!emitSplit(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
     if (node.op_type() == "Squeeze") {
       if (!emitSqueeze(node, valueMap, tensorTypes))
         return nullptr;
@@ -2024,6 +3313,11 @@ OwningOpRef<ModuleOp> ONNXMLIREmitter::emitFromFile(llvm::StringRef onnxPath) {
     }
     if (node.op_type() == "Transpose") {
       if (!emitTranspose(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Tile") {
+      if (!emitTile(node, valueMap, tensorTypes))
         return nullptr;
       continue;
     }
@@ -2044,6 +3338,16 @@ OwningOpRef<ModuleOp> ONNXMLIREmitter::emitFromFile(llvm::StringRef onnxPath) {
     }
     if (node.op_type() == "Flatten") {
       if (!emitFlatten(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Mod") {
+      if (!emitMod(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "TopK") {
+      if (!emitTopK(node, valueMap, tensorTypes))
         return nullptr;
       continue;
     }
