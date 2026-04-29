@@ -74,6 +74,26 @@ This file tracks what you need to study and practice.
 - Linalg to loops conversion
 - MLIR built-in passes
 
+### Pipeline Clarification
+- `Gawee -> Linalg` and `Linalg -> SCF` are not the same step
+- There is now an explicit middle slot for `Linalg`-level transforms
+- Typical work in that slot: tiling, fusion, scheduling, vectorization prep
+
+### Direction After Lowering
+- Saying "I experienced AI compiler middle-end broadly" now requires more than legalization and bufferization
+- The missing center of gravity is optimization-oriented middle-end work:
+  - real tiling
+  - real fusion
+  - real scheduling
+  - real vectorization prep / vector lowering
+  - correctness + latency verification loop
+- Current codebase status:
+  - legalization/lowering: implemented
+  - bufferization pipeline: wired
+  - end-to-end AOT execution: wired
+  - optimization passes: implemented as heuristic planning / annotation passes
+  - pre-bufferization cleanup: implemented for `tensor.empty` and no-op `tensor.cast`
+
 ---
 
 ## Phase 6: JSON → Gawee MLIR (Translator) 🔄 CURRENT
@@ -115,6 +135,86 @@ This file tracks what you need to study and practice.
 - Multiple conversion passes and order
 - UnrealizedConversionCast
 - mlir-translate (MLIR ↔ LLVM IR)
+
+### Updated Mental Model
+- Step 1: `Gawee -> Linalg` legalization
+- Step 2: tiling pass
+  - current file: `lib/Conversion/LinalgTransform.cpp`
+  - current implementation:
+    - inspect conv / matmul / generic families
+    - choose tile-size hints
+    - attach explicit `gawee.transform.*` attrs
+  - intended ownership: tiling decisions before loop lowering
+- Step 3: fusion pass
+  - current file: `lib/Conversion/LinalgFusion.cpp`
+  - current implementation:
+    - detect simple single-use producer/consumer pairs
+    - attach `gawee.fusion.group` / role attrs
+  - intended ownership: producer/consumer fusion and post-op fusion planning
+- Step 4: scheduling pass
+  - current file: `lib/Conversion/LinalgScheduling.cpp`
+  - current implementation:
+    - count parallel vs reduction loops
+    - attach loop-interchange and scheduling-hint attrs
+  - intended ownership: loop order / parallel / reduction scheduling decisions
+- Step 5: vectorization pass
+  - current file: `lib/Conversion/LinalgVectorization.cpp`
+  - current implementation:
+    - attach vectorization kind + width hints
+    - record static-result readiness
+  - intended ownership: vectorization readiness and vector-lowering preparation
+- Step 6: verification pass
+  - current file: `lib/Conversion/LinalgVerification.cpp`
+  - current implementation:
+    - summarize linalg coverage at module level
+    - mark per-op verification status attrs
+  - intended ownership: transform precondition checks and IR-side verification hooks
+- Step 7: bufferization preparation
+  - current file: `lib/Conversion/BufferizePrep.cpp`
+  - current implementation:
+    - replace `tensor.empty` with `bufferization.alloc_tensor`
+    - fold no-op `tensor.cast`
+    - attach destination-style bufferization attrs
+  - intended ownership: pre-bufferization cleanup and normalization
+- Step 8: one-shot bufferization (`tensor -> memref`)
+- Step 9: `Linalg(memref) -> SCF`
+- Step 10: `SCF -> CF -> LLVM`
+
+### Middle-end Completion Direction
+- To honestly say "I covered the middle-end broadly", target this sequence:
+  1. replace attr-level tiling hints with real conv/matmul tiling rewrites
+  2. replace fusion grouping attrs with at least one real producer-consumer fusion rewrite
+  3. replace scheduling hints with at least one concrete loop reorder / parallel choice
+  4. replace vectorization hints with a real vector-friendly lowering step
+  5. connect verification attrs to correctness/latency experiments in `back/`
+- In other words:
+  - "lowering works" is the starting point
+  - "performance transforms + verification loop work" is the fuller middle-end story
+
+### Current Backend Status
+- `resnet18`
+  - `gawee-to-loops`: passes
+  - `gawee-to-llvm`: passes
+  - AOT runner build: passes
+  - AOT runner execution: passes
+  - output shape matches ONNX Runtime: `(1, 1000)`
+  - correctness now matches ONNX Runtime on the saved evaluation input:
+    - `max_abs_diff ~= 2.86e-06`
+    - `mean_abs_diff ~= 6.07e-07`
+    - `np.allclose(..., atol=1e-4, rtol=1e-4)` passes
+  - current latency baseline:
+    - Gawee AOT end-to-end runner: about `6.52s ~ 6.59s`
+    - ONNX Runtime inference-only: about `15.4ms ~ 17.4ms`
+  - interpretation:
+    - the backend execution path is closed
+    - the result is numerically aligned on the current saved-input check
+    - the current AOT latency includes file I/O and process launch, so it is only a coarse baseline
+- `bert_tiny`, `distilbert_base_uncased`
+  - translator and several dynamic lowering blockers were improved
+  - but end-to-end LLVM/AOT/correctness are not closed yet
+  - next focus:
+    - dynamic shape + broadcast cleanup
+    - slice/reduce/reshape correctness under bufferization
 
 ---
 

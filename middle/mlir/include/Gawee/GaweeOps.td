@@ -187,6 +187,15 @@ def Gawee_DivOp : Gawee_Op<"div", []> {
   // - reference: AdAvgPool lowering uses DivFOp in a generic body
 }
 
+def Gawee_MatMulOp : Gawee_Op<"matmul", []> {
+  let summary = "General ONNX-style MatMul";
+  let arguments = (ins
+    AnyTensor:$lhs,
+    AnyTensor:$rhs
+  );
+  let results = (outs AnyTensor:$output);
+}
+
 def Gawee_ReduceMeanOp : Gawee_Op<"reduce_mean", []> {
   let summary = "ReduceMean over selected axes";
   let arguments = (ins
@@ -451,6 +460,58 @@ def Gawee_ExpandOp : Gawee_Op<"expand", []> {
   // - lowering: first decide whether expand survives to middle-end at all
 }
 
+def Gawee_GatherOp : Gawee_Op<"gather", []> {
+  let summary = "Gather slices from data along one axis";
+  let arguments = (ins
+    AnyTensor:$data,
+    AnyTensor:$indices,
+    I64Attr:$axis
+  );
+  let results = (outs AnyTensor:$output);
+}
+
+def Gawee_GatherElementsOp : Gawee_Op<"gather_elements", []> {
+  let summary = "Gather elements using per-position indices";
+  let arguments = (ins
+    AnyTensor:$data,
+    AnyTensor:$indices,
+    I64Attr:$axis
+  );
+  let results = (outs AnyTensor:$output);
+}
+
+def Gawee_RangeOp : Gawee_Op<"range", []> {
+  let summary = "Construct a 1-D arithmetic progression";
+  let arguments = (ins
+    AnyTensor:$start,
+    AnyTensor:$limit,
+    AnyTensor:$delta
+  );
+  let results = (outs AnyTensor:$output);
+}
+
+def Gawee_ResizeOp : Gawee_Op<"resize", []> {
+  let summary = "Resize tensor with preserved ONNX mode semantics";
+  let arguments = (ins
+    AnyTensor:$input,
+    AnyTensor:$scales,
+    StrAttr:$mode,
+    StrAttr:$coordinateTransformationMode,
+    StrAttr:$nearestMode
+  );
+  let results = (outs AnyTensor:$output);
+}
+
+def Gawee_SplitOp : Gawee_Op<"split", []> {
+  let summary = "Split tensor into multiple outputs along one axis";
+  let arguments = (ins
+    AnyTensor:$input,
+    DenseI64ArrayAttr:$splitSizes,
+    I64Attr:$axis
+  );
+  let results = (outs Variadic<AnyTensor>:$outputs);
+}
+
 def Gawee_SliceOp : Gawee_Op<"slice", []> {
   let summary = "Tensor slice";
   let arguments = (ins
@@ -481,6 +542,15 @@ def Gawee_PadOp : Gawee_Op<"pad", []> {
   // TODO when implementing:
   // - emitter: ONNX Pad uses pads/value as inputs in newer opsets
   // - lowering: decide whether padding survives as a dedicated high-level op
+}
+
+def Gawee_TileOp : Gawee_Op<"tile", []> {
+  let summary = "Repeat tensor along each dimension";
+  let arguments = (ins
+    AnyTensor:$input,
+    AnyTensor:$repeats
+  );
+  let results = (outs AnyTensor:$output);
 }
 
 def Gawee_CastOp : Gawee_Op<"cast", []> {

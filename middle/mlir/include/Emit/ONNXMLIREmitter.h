@@ -44,6 +44,7 @@ private:
   MLIRContext *ctx;
   std::unique_ptr<OpBuilder> builder;
   std::string errorMsg;
+  std::string onnxDirectory;
   llvm::StringMap<llvm::SmallVector<int64_t>> i64TensorLiterals;
 
   // ONNX node helpers. Each helper should:
@@ -77,7 +78,25 @@ private:
   bool emitDiv(const onnx::NodeProto &node,
                llvm::StringMap<Value> &valueMap,
                llvm::StringMap<RankedTensorType> &tensorTypes);
+  bool emitMatMul(const onnx::NodeProto &node,
+                  llvm::StringMap<Value> &valueMap,
+                  llvm::StringMap<RankedTensorType> &tensorTypes);
+  bool emitPow(const onnx::NodeProto &node,
+               llvm::StringMap<Value> &valueMap,
+               llvm::StringMap<RankedTensorType> &tensorTypes);
+  bool emitNeg(const onnx::NodeProto &node,
+               llvm::StringMap<Value> &valueMap,
+               llvm::StringMap<RankedTensorType> &tensorTypes);
   bool emitEqual(const onnx::NodeProto &node,
+                 llvm::StringMap<Value> &valueMap,
+                 llvm::StringMap<RankedTensorType> &tensorTypes);
+  bool emitAnd(const onnx::NodeProto &node,
+               llvm::StringMap<Value> &valueMap,
+               llvm::StringMap<RankedTensorType> &tensorTypes);
+  bool emitLessOrEqual(const onnx::NodeProto &node,
+                       llvm::StringMap<Value> &valueMap,
+                       llvm::StringMap<RankedTensorType> &tensorTypes);
+  bool emitIsNaN(const onnx::NodeProto &node,
                  llvm::StringMap<Value> &valueMap,
                  llvm::StringMap<RankedTensorType> &tensorTypes);
   bool emitErf(const onnx::NodeProto &node,
@@ -86,6 +105,12 @@ private:
   bool emitExpand(const onnx::NodeProto &node,
                   llvm::StringMap<Value> &valueMap,
                   llvm::StringMap<RankedTensorType> &tensorTypes);
+  bool emitGather(const onnx::NodeProto &node,
+                  llvm::StringMap<Value> &valueMap,
+                  llvm::StringMap<RankedTensorType> &tensorTypes);
+  bool emitGatherElements(const onnx::NodeProto &node,
+                          llvm::StringMap<Value> &valueMap,
+                          llvm::StringMap<RankedTensorType> &tensorTypes);
   bool emitGelu(const onnx::NodeProto &node,
                 llvm::StringMap<Value> &valueMap,
                 llvm::StringMap<RankedTensorType> &tensorTypes);
@@ -119,12 +144,21 @@ private:
   bool emitReduceMean(const onnx::NodeProto &node,
                       llvm::StringMap<Value> &valueMap,
                       llvm::StringMap<RankedTensorType> &tensorTypes);
+  bool emitReduceMax(const onnx::NodeProto &node,
+                     llvm::StringMap<Value> &valueMap,
+                     llvm::StringMap<RankedTensorType> &tensorTypes);
   bool emitReduceSum(const onnx::NodeProto &node,
                      llvm::StringMap<Value> &valueMap,
                      llvm::StringMap<RankedTensorType> &tensorTypes);
+  bool emitResize(const onnx::NodeProto &node,
+                  llvm::StringMap<Value> &valueMap,
+                  llvm::StringMap<RankedTensorType> &tensorTypes);
   bool emitReshape(const onnx::NodeProto &node,
                    llvm::StringMap<Value> &valueMap,
                    llvm::StringMap<RankedTensorType> &tensorTypes);
+  bool emitRange(const onnx::NodeProto &node,
+                 llvm::StringMap<Value> &valueMap,
+                 llvm::StringMap<RankedTensorType> &tensorTypes);
   bool emitShape(const onnx::NodeProto &node,
                  llvm::StringMap<Value> &valueMap,
                  llvm::StringMap<RankedTensorType> &tensorTypes);
@@ -140,6 +174,15 @@ private:
   bool emitSqrt(const onnx::NodeProto &node,
                 llvm::StringMap<Value> &valueMap,
                 llvm::StringMap<RankedTensorType> &tensorTypes);
+  bool emitSin(const onnx::NodeProto &node,
+               llvm::StringMap<Value> &valueMap,
+               llvm::StringMap<RankedTensorType> &tensorTypes);
+  bool emitCos(const onnx::NodeProto &node,
+               llvm::StringMap<Value> &valueMap,
+               llvm::StringMap<RankedTensorType> &tensorTypes);
+  bool emitSplit(const onnx::NodeProto &node,
+                 llvm::StringMap<Value> &valueMap,
+                 llvm::StringMap<RankedTensorType> &tensorTypes);
   bool emitSqueeze(const onnx::NodeProto &node,
                    llvm::StringMap<Value> &valueMap,
                    llvm::StringMap<RankedTensorType> &tensorTypes);
@@ -149,12 +192,27 @@ private:
   bool emitTranspose(const onnx::NodeProto &node,
                      llvm::StringMap<Value> &valueMap,
                      llvm::StringMap<RankedTensorType> &tensorTypes);
+  bool emitTile(const onnx::NodeProto &node,
+                llvm::StringMap<Value> &valueMap,
+                llvm::StringMap<RankedTensorType> &tensorTypes);
   bool emitUnsqueeze(const onnx::NodeProto &node,
                      llvm::StringMap<Value> &valueMap,
                      llvm::StringMap<RankedTensorType> &tensorTypes);
   bool emitWhere(const onnx::NodeProto &node,
                  llvm::StringMap<Value> &valueMap,
                  llvm::StringMap<RankedTensorType> &tensorTypes);
+  bool emitConstant(const onnx::NodeProto &node,
+                    llvm::StringMap<Value> &valueMap,
+                    llvm::StringMap<RankedTensorType> &tensorTypes);
+  bool emitConstantOfShape(const onnx::NodeProto &node,
+                           llvm::StringMap<Value> &valueMap,
+                           llvm::StringMap<RankedTensorType> &tensorTypes);
+  bool emitMod(const onnx::NodeProto &node,
+               llvm::StringMap<Value> &valueMap,
+               llvm::StringMap<RankedTensorType> &tensorTypes);
+  bool emitTopK(const onnx::NodeProto &node,
+                llvm::StringMap<Value> &valueMap,
+                llvm::StringMap<RankedTensorType> &tensorTypes);
 
   // Existing gawee ops that are useful to keep visible in the ONNX scaffold.
   bool emitBatchNormalization(const onnx::NodeProto &node,

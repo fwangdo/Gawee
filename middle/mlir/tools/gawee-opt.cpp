@@ -15,6 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Gawee/GaweeDialect.h"
+#include "Conversion/GaweePasses.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -22,19 +23,24 @@
 #include "mlir/Dialect/Linalg/Passes.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/MemRef/Transforms/Passes.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Bufferization/Transforms/Passes.h"
 #include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
 #include "mlir/Dialect/Bufferization/Transforms/FuncBufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/LLVMIR/Transforms/Passes.h"
 #include "mlir/Dialect/Linalg/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Tensor/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
+#include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVMPass.h"
+#include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
+#include "mlir/Conversion/MathToLibm/MathToLibm.h"
 #include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
@@ -50,12 +56,6 @@ using namespace mlir;
 //===----------------------------------------------------------------------===//
 // Pass Declaration
 //===----------------------------------------------------------------------===//
-// Declare the pass creation function (defined in GaweeToLinalg.cpp)
-
-namespace mlir::gawee {
-std::unique_ptr<Pass> createGaweeToLinalgPass();
-}
-
 //===----------------------------------------------------------------------===//
 // Main Entry Point
 //===----------------------------------------------------------------------===//
@@ -76,11 +76,23 @@ int main(int argc, char **argv) {
       [](OpPassManager &pm) {
         // Step 1: Gawee -> Linalg (on tensors)
         pm.addPass(gawee::createGaweeToLinalgPass());
-        // Step 2: Bufferize (tensor -> memref)
+
+        // Step 2: Linalg-level transform slot (tiling / scheduling / fusion)
+        pm.addPass(gawee::createLinalgTransformPass());
+        pm.addPass(gawee::createLinalgFusionPass());
+        pm.addPass(gawee::createLinalgSchedulingPass());
+        pm.addPass(gawee::createLinalgVectorizationPass());
+        pm.addPass(gawee::createLinalgVerificationPass());
+
+        // Step 3: Bufferization preparation slot
+        pm.addPass(gawee::createGaweeBufferizePrepPass());
+
+        // Step 4: Bufferize (tensor -> memref)
         bufferization::OneShotBufferizePassOptions bufOpts;
         bufOpts.bufferizeFunctionBoundaries = true;
         pm.addPass(bufferization::createOneShotBufferizePass(bufOpts));
-        // Step 3: Linalg -> SCF loops
+
+        // Step 5: Linalg -> SCF loops
         pm.addPass(createConvertLinalgToLoopsPass());
       });
 
@@ -92,28 +104,52 @@ int main(int argc, char **argv) {
         // Step 1: Gawee -> Linalg (on tensors)
         pm.addPass(gawee::createGaweeToLinalgPass());
 
-        // Step 2: Convert tensor.empty to bufferization.alloc_tensor
+        // Step 2: Linalg-level transform slot (tiling / scheduling / fusion)
+        pm.addPass(gawee::createLinalgTransformPass());
+        pm.addPass(gawee::createLinalgFusionPass());
+        pm.addPass(gawee::createLinalgSchedulingPass());
+        pm.addPass(gawee::createLinalgVectorizationPass());
+        pm.addPass(gawee::createLinalgVerificationPass());
+
+        // Step 3a: Decompose aggregated linalg ops (e.g. softmax) into
+        // primitive linalg.generic / arith / math ops.
+        pm.addPass(gawee::createDecomposeAggregatedLinalgOpsPass());
+
+        // Step 3b: Convert tensor.empty to bufferization.alloc_tensor
         // (required for proper bufferization)
         pm.addPass(bufferization::createEmptyTensorToAllocTensorPass());
 
-        // Step 3: Bufferize (tensor -> memref)
+        // Step 4: Bufferization preparation slot
+        pm.addPass(gawee::createGaweeBufferizePrepPass());
+
+        // Step 5: Bufferize (tensor -> memref)
         bufferization::OneShotBufferizePassOptions bufOpts;
         bufOpts.bufferizeFunctionBoundaries = true;
         pm.addPass(bufferization::createOneShotBufferizePass(bufOpts));
 
-        // Step 4: Linalg -> SCF loops
+        // Step 6: Linalg -> SCF loops
         pm.addPass(createConvertLinalgToLoopsPass());
 
-        // Step 5: SCF -> ControlFlow (cf dialect)
+        // Step 7: SCF -> ControlFlow (cf dialect)
         pm.addPass(createSCFToControlFlowPass());
 
-        // Step 6: Convert to LLVM dialect
+        // Step 8: Normalize memref metadata ops before LLVM conversion.
+        pm.addPass(memref::createExpandStridedMetadataPass());
+        pm.addPass(createLowerAffinePass());
+
+        // Step 9: Mark user-defined funcs for C-interface wrappers BEFORE
+        // MathToLibm creates libm declarations (which must not get wrappers).
+        pm.addPass(LLVM::createLLVMRequestCWrappersPass());
+
+        // Step 10: Convert to LLVM dialect
+        pm.addPass(createConvertMathToLibmPass());
+        pm.addPass(createConvertMathToLLVMPass());
         pm.addPass(createArithToLLVMConversionPass());
         pm.addPass(createConvertControlFlowToLLVMPass());
         pm.addPass(createFinalizeMemRefToLLVMConversionPass());
         pm.addPass(createConvertFuncToLLVMPass());
 
-        // Step 7: Clean up unrealized casts
+        // Step 11: Clean up unrealized casts
         pm.addPass(createReconcileUnrealizedCastsPass());
       });
 
@@ -129,6 +165,7 @@ int main(int argc, char **argv) {
         pm.addPass(createArithToLLVMConversionPass());
         pm.addPass(createConvertControlFlowToLLVMPass());
         pm.addPass(createFinalizeMemRefToLLVMConversionPass());
+        pm.addPass(LLVM::createLLVMRequestCWrappersPass());
         pm.addPass(createConvertFuncToLLVMPass());
 
         // Step 3: Clean up unrealized casts
