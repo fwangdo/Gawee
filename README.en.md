@@ -7,7 +7,7 @@ their graphs, lowers them through an MLIR pipeline
 (`Gawee Dialect -> Linalg -> SCF/LLVM`), and builds AOT native executables.
 
 The current priority is to reduce heavy frontend rewrites and instead make the
-middle-end accept the real operation set needed by `resnet / distilbert / qwen`.
+middle-end accept the real operation set needed by `resnet / bert_tiny / tinyllama`.
 
 ---
 
@@ -16,8 +16,8 @@ middle-end accept the real operation set needed by `resnet / distilbert / qwen`.
 | Model | ONNX Emission | Gawee -> Linalg | Full LLVM/AOT | Notes |
 | --- | --- | --- | --- | --- |
 | ResNet-18 | pass | pass | pass | End-to-end AOT and numerical path available |
-| distilbert_base_uncased | pass | pass | rechecking | Full LLVM path is being revalidated after semantic-op expansion |
-| qwen3_0_6b | pass | pass | in progress | Very large module; full LLVM path is long-running |
+| bert_tiny | pass | pass | pass | Correctness passes after preserving semantic `Gather` |
+| tinyllama_15m | pending | pending | pending | Tiny decoder LLM candidate with `RoPE` |
 
 ### What was added in this stage
 
@@ -121,13 +121,18 @@ After the semantic-op expansion:
 - `resnet18`
   - ONNX emission passes
   - `gawee-to-llvm` passes
-- `distilbert_base_uncased`
+- `bert_tiny`
   - ONNX emission passes
-  - `convert-gawee-to-linalg` passes
+  - `gawee-to-llvm` passes
+  - correctness passes
 - `qwen3_0_6b`
   - ONNX emission passes
   - `convert-gawee-to-linalg` passes
   - fixed dynamic-length legalization for `gawee.range`
+
+`distilbert_base_uncased` is removed from the default benchmark/eval set because
+its CPU cost is too high for routine regression runs. It is being replaced by
+`tinyllama_15m` as the small modern decoder candidate.
 
 For `qwen`, the full LLVM pipeline is still primarily a scale/runtime issue.
 The main milestone for this phase is that semantic ops are now legalized at the

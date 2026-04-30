@@ -6,7 +6,7 @@
 (`Gawee Dialect -> Linalg -> SCF/LLVM`)으로 lowering해서 AOT 실행 파일까지
 만드는 딥러닝 컴파일러 프로젝트입니다.
 
-현재 우선순위는 "작은 vision 모델용 우회 rewrite"보다, `resnet / distilbert / qwen`
+현재 우선순위는 "작은 vision 모델용 우회 rewrite"보다, `resnet / bert_tiny / tinyllama`
 같은 실제 benchmark 모델이 middle-end에서 직접 지원되는 op 집합을 넓히는 것입니다.
 
 ---
@@ -16,8 +16,8 @@
 | 모델 | ONNX Emission | Gawee -> Linalg | Full LLVM/AOT | 비고 |
 | --- | --- | --- | --- | --- |
 | ResNet-18 | pass | pass | pass | AOT 실행 및 수치 검증 경로 확보 |
-| distilbert_base_uncased | pass | pass | 재확인 중 | semantic op 확장 이후 full LLVM 재검증 중 |
-| qwen3_0_6b | pass | pass | 진행 중 | 대형 모듈이라 full LLVM 경로가 오래 걸림 |
+| bert_tiny | pass | pass | pass | `Gather` semantic op 유지 후 correctness 통과 |
+| tinyllama_15m | 준비 중 | 준비 중 | 준비 중 | `RoPE`가 들어간 초소형 decoder LLM 후보 |
 
 ### 이번 단계에서 늘린 지원 범위
 
@@ -136,16 +136,20 @@ ONNX Model
 - `resnet18`
   - ONNX emission 통과
   - `gawee-to-llvm` 통과
-- `distilbert_base_uncased`
+- `bert_tiny`
   - ONNX emission 통과
-  - `convert-gawee-to-linalg` 통과
+  - `gawee-to-llvm` 통과
+  - correctness 통과
 - `qwen3_0_6b`
   - ONNX emission 통과
   - `convert-gawee-to-linalg` 통과
   - `gawee.range`의 dynamic length legalization 문제를 수정
 
+`distilbert_base_uncased`는 CPU 사용량 때문에 기본 benchmark/eval 대상에서 제외했습니다.
+그 자리는 `tinyllama_15m`로 대체해, 더 작은 체급에서 `RoPE`가 포함된 modern decoder 경로를 먼저 보려 합니다.
+
 `qwen`은 모듈이 커서 full LLVM 파이프라인 자체가 오래 걸리므로,
-현재는 "semantic op가 MLIR 단계에서 illegal로 남지 않는다"는 것을 우선 기준으로 봅니다.
+현재는 확장 benchmark로 두고 "semantic op가 MLIR 단계에서 illegal로 남지 않는다"는 것을 우선 기준으로 봅니다.
 
 ---
 

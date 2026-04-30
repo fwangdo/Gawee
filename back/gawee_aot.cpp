@@ -194,7 +194,8 @@ std::string emitFunctionPrototype(const FuncSignature &sig) {
   return out.str();
 }
 
-std::string emitLauncher(const FuncSignature &sig, int numOutputArgs) {
+std::string emitLauncher(const FuncSignature &sig, int numOutputArgs,
+                         bool installSegvHandler) {
   if (numOutputArgs < 0 ||
       static_cast<size_t>(numOutputArgs) > sig.args.size()) {
     throw std::runtime_error("Invalid --num-output-args value");
@@ -203,11 +204,25 @@ std::string emitLauncher(const FuncSignature &sig, int numOutputArgs) {
 
   std::ostringstream out;
   out << "#include <cstdint>\n"
+      << "#include <execinfo.h>\n"
       << "#include <filesystem>\n"
       << "#include <iostream>\n"
+      << "#include <signal.h>\n"
       << "#include <string>\n"
+      << "#include <unistd.h>\n"
       << "#include \"runtime_support.h\"\n\n";
   out << emitFunctionPrototype(sig) << "\n";
+  if (installSegvHandler) {
+    out << "namespace {\n"
+        << "void segvHandler(int signalNumber) {\n"
+        << "  void *frames[128];\n"
+        << "  int frameCount = backtrace(frames, 128);\n"
+        << "  std::cerr << \"[gawee-aot] signal \" << signalNumber << \" backtrace\\n\";\n"
+        << "  backtrace_symbols_fd(frames, frameCount, STDERR_FILENO);\n"
+        << "  std::_Exit(128 + signalNumber);\n"
+        << "}\n"
+        << "} // namespace\n\n";
+  }
   out << "int main(int argc, char **argv) {\n"
       << "  if (argc != 3) {\n"
       << "    std::cerr << \"Usage: \" << argv[0] << \" <inputs_dir> <outputs_dir>\\n\";\n"
@@ -217,6 +232,11 @@ std::string emitLauncher(const FuncSignature &sig, int numOutputArgs) {
       << "  fs::path inputsDir(argv[1]);\n"
       << "  fs::path outputsDir(argv[2]);\n"
       << "  fs::create_directories(outputsDir);\n";
+  if (installSegvHandler) {
+    out << "  signal(SIGSEGV, segvHandler);\n";
+  }
+  out
+      << "  std::cerr << \"[gawee-aot] loading inputs\\n\";\n";
 
   for (size_t i = 0; i < numInputArgs; ++i) {
     const auto &arg = sig.args[i];
@@ -239,6 +259,7 @@ std::string emitLauncher(const FuncSignature &sig, int numOutputArgs) {
   if (!sig.returns.empty()) {
     out << "  " << descriptorType(sig.returns[0]) << " result{};\n";
   }
+  out << "  std::cerr << \"[gawee-aot] calling entry\\n\";\n";
   out << "  _mlir_ciface_" << sig.entry << "(";
   bool first = true;
   if (!sig.returns.empty()) {
@@ -251,6 +272,7 @@ std::string emitLauncher(const FuncSignature &sig, int numOutputArgs) {
     first = false;
   }
   out << ");\n";
+  out << "  std::cerr << \"[gawee-aot] entry returned\\n\";\n";
 
   for (size_t i = numInputArgs; i < sig.args.size(); ++i) {
     const auto &arg = sig.args[i];
@@ -258,10 +280,12 @@ std::string emitLauncher(const FuncSignature &sig, int numOutputArgs) {
         << (i - numInputArgs) << ".npy\", arg" << i << "Tensor);\n";
   }
   if (!sig.returns.empty()) {
+    out << "  std::cerr << \"[gawee-aot] saving returned memref\\n\";\n";
     out << "  gawee::back::saveReturnedMemRef(outputsDir / \"output"
         << numOutputArgs << ".npy\", result);\n";
   }
 
+  out << "  std::cerr << \"[gawee-aot] done\\n\";\n";
   out << "  return 0;\n}\n";
   return out.str();
 }
@@ -303,12 +327,19 @@ void buildExecutable(const fs::path &abiSource,
                      const fs::path &output,
                      const std::string &entry,
                      int numOutputArgs,
-                     const fs::path &llvmBin) {
+                     const fs::path &llvmBin,
+                     const fs::path &dumpLauncher,
+                     bool debugBuild,
+                     bool installSegvHandler) {
   FuncSignature sig = parseFuncSignature(abiSource, entry);
-  std::string launcher = emitLauncher(sig, numOutputArgs);
+  std::string launcher = emitLauncher(sig, numOutputArgs, installSegvHandler);
 
   fs::path launcherPath = fs::temp_directory_path() / "gawee_aot_launcher.cpp";
   writeText(launcherPath, launcher);
+  if (!dumpLauncher.empty()) {
+    fs::create_directories(dumpLauncher.parent_path());
+    writeText(dumpLauncher, launcher);
+  }
 
   fs::path llvmIr = translateIfNeeded(loweredInput, llvmBin);
   fs::create_directories(output.parent_path());
@@ -323,7 +354,9 @@ void buildExecutable(const fs::path &abiSource,
   runChecked(llcCmd.str());
 
   std::ostringstream cmd;
-  cmd << "/usr/bin/clang++ -std=c++17 -O2 -I" << fs::absolute("back").string()
+  cmd << "/usr/bin/clang++ -std=c++17 "
+      << (debugBuild ? "-O0 -g -Wl,-export_dynamic " : "-O2 ")
+      << "-I" << fs::absolute("back").string()
       << " " << launcherPath.string() << " " << loweredObj.string()
       << " -L" << (llvmBin.parent_path() / "lib").string()
       << " -Wl,-rpath," << (llvmBin.parent_path() / "lib").string()
@@ -340,7 +373,8 @@ int main(int argc, char **argv) {
       throw std::runtime_error(
           "Usage: gawee-aot build --abi-source <forward_memref.mlir> "
           "--input <lowered.mlir|lowered.ll> --output <runner> "
-          "[--entry forward] [--num-output-args N] [--llvm-bin <dir>]");
+          "[--entry forward] [--num-output-args N] [--llvm-bin <dir>] "
+          "[--debug-build] [--install-segv-handler]");
     }
 
     std::string command = argv[1];
@@ -354,6 +388,9 @@ int main(int argc, char **argv) {
     std::string entry = "forward";
     int numOutputArgs = 0;
     fs::path llvmBin = fs::path(std::getenv("HOME")) / "llvm-install" / "bin";
+    fs::path dumpLauncher;
+    bool debugBuild = false;
+    bool installSegvHandler = false;
 
     for (int i = 2; i < argc; ++i) {
       std::string arg = argv[i];
@@ -376,6 +413,12 @@ int main(int argc, char **argv) {
         numOutputArgs = std::stoi(nextValue(arg));
       } else if (arg == "--llvm-bin") {
         llvmBin = nextValue(arg);
+      } else if (arg == "--dump-launcher") {
+        dumpLauncher = nextValue(arg);
+      } else if (arg == "--debug-build") {
+        debugBuild = true;
+      } else if (arg == "--install-segv-handler") {
+        installSegvHandler = true;
       } else {
         throw std::runtime_error("Unknown option: " + arg);
       }
@@ -386,7 +429,8 @@ int main(int argc, char **argv) {
           "--abi-source, --input, and --output are required");
     }
 
-    buildExecutable(abiSource, input, output, entry, numOutputArgs, llvmBin);
+    buildExecutable(abiSource, input, output, entry, numOutputArgs, llvmBin,
+                    dumpLauncher, debugBuild, installSegvHandler);
     return 0;
   } catch (const std::exception &ex) {
     std::cerr << "gawee-aot error: " << ex.what() << "\n";

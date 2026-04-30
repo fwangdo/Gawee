@@ -194,6 +194,7 @@ static FailureOr<SmallVector<int64_t>> getConstantI64Tensor(Value value) {
 static Value extractTensorScalarAsIndex(OpBuilder &builder, Location loc,
                                         Value tensor, int64_t position) {
   Value idx = arith::ConstantOp::create(builder, loc, builder.getIndexAttr(position));
+  // the reason of using "ValueRange" is that it can access multi index. 
   Value extracted = tensor::ExtractOp::create(builder, loc, tensor, ValueRange{idx});
   if (isa<IndexType>(extracted.getType()))
     return extracted;
@@ -239,6 +240,7 @@ static FailureOr<Value> expandReductionResultToKeepDims(
         tensor::ReshapeOp::create(rewriter, loc, outputType, reduced, shapeValue));
   }
 
+  // the axes look like { 2, 3 }. it should be recovered. 
   llvm::SmallDenseSet<int64_t> reducedAxes;
   for (int64_t axis : axes)
     reducedAxes.insert(axis);
@@ -366,6 +368,13 @@ struct ConvOpLowering : public OpConversionPattern<gawee::ConvOp> {
 
       // PadOp needs a body region that yields the pad value (zero).
       // Q. need to know the meaning of low / high pad. 
+
+      // The semantics of pad op is,  
+      // for each index idx in output tensor:
+      // if idx ∈ original input 영역:
+      //   out[idx] = input[idx']
+      // else:
+      //   out[idx] = region(idx)
       auto padOp = rewriter.create<tensor::PadOp>(
           loc, paddedType, input,
           lowPad, highPad,
@@ -1254,9 +1263,63 @@ struct CatOpLowering : public OpConversionPattern<gawee::CatOp> {
   matchAndRewrite(gawee::CatOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
-    auto catOp = tensor::ConcatOp::create(rewriter, op.getLoc(), outputType,
-                                          op.getAxis(), adaptor.getInputs());
-    rewriter.replaceOp(op, catOp.getResult());
+    Location loc = op.getLoc();
+    int64_t axis = op.getAxis();
+    if (axis < 0)
+      axis += outputType.getRank();
+
+    SmallVector<Value> dynamicDims;
+    dynamicDims.reserve(outputType.getNumDynamicDims());
+    for (int64_t dim = 0; dim < outputType.getRank(); ++dim) {
+      if (!outputType.isDynamicDim(dim))
+        continue;
+      if (dim == axis) {
+        Value total = arith::ConstantIndexOp::create(rewriter, loc, 0);
+        for (Value input : adaptor.getInputs()) {
+          Value inputDim = tensor::DimOp::create(rewriter, loc, input, dim);
+          total = arith::AddIOp::create(rewriter, loc, total, inputDim);
+        }
+        dynamicDims.push_back(total);
+      } else {
+        dynamicDims.push_back(tensor::DimOp::create(
+                                 rewriter, loc, adaptor.getInputs().front(), dim)
+                                 .getResult());
+      }
+    }
+
+    Value result = tensor::EmptyOp::create(
+        rewriter, loc, outputType.getShape(), outputType.getElementType(),
+        dynamicDims);
+    Value axisOffset = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    for (Value input : adaptor.getInputs()) {
+      auto inputType = dyn_cast<RankedTensorType>(input.getType());
+      if (!inputType)
+        return rewriter.notifyMatchFailure(op, "cat expects ranked inputs");
+
+      SmallVector<OpFoldResult> offsets(outputType.getRank(),
+                                        rewriter.getIndexAttr(0));
+      SmallVector<OpFoldResult> sizes;
+      SmallVector<OpFoldResult> strides(outputType.getRank(),
+                                        rewriter.getIndexAttr(1));
+      sizes.reserve(outputType.getRank());
+      offsets[axis] = axisOffset;
+
+      for (int64_t dim = 0; dim < inputType.getRank(); ++dim) {
+        if (inputType.isDynamicDim(dim)) {
+          sizes.push_back(
+              tensor::DimOp::create(rewriter, loc, input, dim).getResult());
+        } else {
+          sizes.push_back(rewriter.getIndexAttr(inputType.getDimSize(dim)));
+        }
+      }
+
+      result = tensor::InsertSliceOp::create(
+          rewriter, loc, input, result, offsets, sizes, strides);
+      Value inputAxisDim = tensor::DimOp::create(rewriter, loc, input, axis);
+      axisOffset = arith::AddIOp::create(rewriter, loc, axisOffset, inputAxisDim);
+    }
+
+    rewriter.replaceOp(op, result);
     return success();
   }
 };
@@ -2572,8 +2635,11 @@ struct PadOpLowering : public OpConversionPattern<gawee::PadOp> {
     auto outputType = mlir::cast<RankedTensorType>(op.getOutput().getType());
     int64_t rank = inputType.getRank();
 
+    // static padding dim.
     SmallVector<int64_t> staticLow(rank, ShapedType::kDynamic);
     SmallVector<int64_t> staticHigh(rank, ShapedType::kDynamic);
+
+    // dynamic padding dim. 
     SmallVector<Value> dynamicLow;
     SmallVector<Value> dynamicHigh;
     for (int64_t dim = 0; dim < rank; ++dim) {

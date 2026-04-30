@@ -96,7 +96,7 @@ This file tracks what you need to study and practice.
 
 ---
 
-## Phase 6: JSON → Gawee MLIR (Translator) 🔄 CURRENT
+## Phase 6: JSON → Gawee MLIR (Translator) ◻ OPTIONAL / LOW PRIORITY
 
 ### Files to Read
 - [ ] `include/Emit/MLIREmitter.h` - Emitter header
@@ -115,11 +115,27 @@ This file tracks what you need to study and practice.
 - LLVM JSON API
 - Topological ordering
 
+### Why This Is Low Priority Now
+- the emitter is useful, but comparatively straightforward
+- it does not teach the hard part of the middle-end
+- current study priority should be:
+  - `Linalg` transform reasoning
+  - bufferization
+  - `SCF`
+  - LLVM lowering
+  - end-to-end IR reconstruction
+
 ---
 
-## Phase 7: SCF → LLVM → Binary
+## Phase 7: Linalg Transform → Bufferize → SCF → LLVM 🔄 CURRENT
 
 ### Files to Read
+- [ ] `lib/Conversion/LinalgTransform.cpp`
+- [ ] `lib/Conversion/LinalgFusion.cpp`
+- [ ] `lib/Conversion/LinalgScheduling.cpp`
+- [ ] `lib/Conversion/LinalgVectorization.cpp`
+- [ ] `lib/Conversion/LinalgVerification.cpp`
+- [ ] `lib/Conversion/BufferizePrep.cpp`
 - [ ] `tools/gawee-opt.cpp` - Look at `--scf-to-llvm` pipeline
 - [ ] `scripts/to_llvm_ir.sh` - LLVM IR generation script
 - [ ] `test/llvm_test.mlir` - Test file for LLVM lowering
@@ -127,8 +143,14 @@ This file tracks what you need to study and practice.
 ### Study Materials
 - [ ] **Read**: `docs/LLVMLowering_Summary.md`
 - [ ] **Practice**: `docs/LLVMLowering_Quiz.cpp`
+- [x] `explanation/01_LinalgTransform.md` ~ `08_Pipeline_BigPicture.md`
 
 ### Key Concepts
+- real tiling rewrite vs tiling metadata
+- fusion planning vs real fusion rewrite
+- scheduling hints vs actual loop reorder
+- vectorization prep vs real vector lowering
+- bufferization preparation
 - Dialect hierarchy (high → low level)
 - SCF → CF (structured → unstructured control flow)
 - MemRef → LLVM struct representation
@@ -180,6 +202,26 @@ This file tracks what you need to study and practice.
 - Step 9: `Linalg(memref) -> SCF`
 - Step 10: `SCF -> CF -> LLVM`
 
+### Explanation Writing Plan
+- [x] `explanation/01_LinalgTransform.md` ✅
+  - explain why this is still `Linalg -> Linalg`, not `Linalg -> SCF`
+  - explain planning structs, heuristics, remarks, and attrs
+- [x] `explanation/02_LinalgFusion.md` ✅
+  - explain producer/consumer detection, fusion groups, and current limits
+- [x] `explanation/03_LinalgScheduling.md` ✅
+  - explain loop classification, interchange hints, and scheduling attrs
+- [x] `explanation/04_LinalgVectorization.md` ✅
+  - explain width hints, static-result checks, and vector-prep intent
+- [x] `explanation/05_LinalgVerification.md` ✅
+  - explain module-level verification summary and per-op verification attrs
+- [x] `explanation/06_BufferizePrep.md` ✅
+  - explain why `tensor.empty` / `tensor.cast` are normalized before bufferization
+- [x] `explanation/07_gawee-opt_pipeline.md` ✅
+  - explain how the pass pipeline is assembled from `Linalg` transforms through LLVM lowering
+- [x] `explanation/08_Pipeline_BigPicture.md` ✅
+  - explain the end-to-end story:
+    `Gawee -> Linalg -> transform/fusion/scheduling/vector/verify -> bufferize -> SCF -> CF -> LLVM`
+
 ### Middle-end Completion Direction
 - To honestly say "I covered the middle-end broadly", target this sequence:
   1. replace attr-level tiling hints with real conv/matmul tiling rewrites
@@ -190,6 +232,26 @@ This file tracks what you need to study and practice.
 - In other words:
   - "lowering works" is the starting point
   - "performance transforms + verification loop work" is the fuller middle-end story
+
+### Training Goal
+- do not stop at "I know one lowering function"
+- be able to rebuild, alone, the full path:
+  - `Gawee op understanding`
+  - `Gawee -> Linalg`
+  - `Linalg transform/fusion/scheduling/vector/verify`
+  - `BufferizePrep`
+  - `OneShotBufferize`
+  - `Linalg -> SCF`
+  - `SCF -> LLVM`
+  - `LLVM dialect -> LLVM IR`
+
+### Concrete Practice Order
+1. rebuild `Conv`, `Linear`, `Reshape`, `Transpose`, `Softmax` lowerings by hand
+2. explain and re-implement the planning passes in plain words
+3. trace one `resnet18` subgraph from `Linalg` to `SCF`
+4. trace the same subgraph from `SCF` to LLVM dialect
+5. dump final LLVM IR and explain where each major op went
+6. only after that, return to emitter if needed
 
 ### Current Backend Status
 - `resnet18`
@@ -271,10 +333,10 @@ Full support for ResNet-like models with all common ops.
 
 ### Study Order (Recommended)
 1. Phase 3 (GaweeToLinalg) - Core pattern rewriting
-2. Phase 4 (gawee-opt) - Tool infrastructure
-3. Phase 6 (MLIREmitter) - Building IR programmatically
-4. Phase 7 (LLVMLowering) - Full lowering pipeline
-5. Phase 5 (LinalgToLoops) - Bufferization details
+2. Phase 4 (gawee-opt) - Pipeline structure
+3. Phase 7 (Linalg transform → LLVM) - Main study target
+4. Phase 5 (LinalgToLoops) - Bufferization and loop lowering details
+5. Phase 6 (MLIREmitter) - Optional reinforcement, not main bottleneck
 
 ---
 
@@ -286,6 +348,6 @@ Full support for ResNet-like models with all common ops.
 | 3     | [x]          | [x]       | [x] ✅          |
 | 4     | [x]          | [x]       | [x] ✅          |
 | 5     | [x]          | [x]       | [x] ✅          |
-| 6     | [ ] **NEXT** | [ ]       | [ ]             |
-| 7     | [ ]          | [ ]       | [ ]             |
+| 6     | [ ] optional | [ ]       | [ ]             |
+| 7     | [ ] **NEXT** | [ ]       | [ ]             |
 | 8     | N/A (guides) | N/A       | [ ] (implement) |
