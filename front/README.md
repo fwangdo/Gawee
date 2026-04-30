@@ -16,10 +16,10 @@
 ## Current Priority Models
 
 - `resnet18`
-- `distilbert_base_uncased`
 - `bert_tiny`
+- `tinyllama_15m`
 
-즉 현재 근시일 조합은 `vision 1개 + NLP 2개`이다.
+즉 현재 근시일 조합은 `vision 1개 + NLP 2개`이며, NLP 한 자리는 `RoPE`가 들어간 더 작은 decoder로 잡는다.
 
 ## Extended Benchmark Candidates
 
@@ -27,6 +27,8 @@
   `RoPE`를 쓰는 decoder-only LLM 후보다. ONNX export는 `opset 17` 기준을 맞추는 쪽으로 관리한다.
 - `yolo26_n`
   최신 `YOLO26` 계열의 소형 모델 후보다. 원본 `pt`를 받아 로컬에서 `ONNX opset 17`로 export해 benchmark에 넣는다.
+
+`distilbert_base_uncased`는 CPU 사용량 문제로 기본 benchmark 대상에서 제외했다.
 
 Frontend의 현재 benchmark scope는 `ai.onnx opset >= 13` 모델만 대상으로 한다.
 

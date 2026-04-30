@@ -15,13 +15,13 @@
 
 즉 이 시스템은 일반적인 ONNX optimizer라기보다, 특정 하드웨어/중간 표현이 받아들일 수 있는 연산 집합으로 graph를 강제로 낮추는 legality-first rewrite pipeline에 가깝다.
 
-현재는 correctness / validation / latency 계측까지 포함한 scaffold를 갖추고 있고, priority 모델 3종에 대해 unsupported op 제거를 달성했다.
+현재는 correctness / validation / latency 계측까지 포함한 scaffold를 갖추고 있고, 현재 기본 priority 모델에 대해 unsupported op 제거를 목표로 둔다.
 
 ## Priority 모델
 
 - `resnet18`
-- `distilbert_base_uncased`
 - `bert_tiny`
+- `tinyllama_15m`
 
 모델 경로는 [specs/catalog.py](/Users/hdy/code/portfolio/Gawee/front/onnx_rewrite/specs/catalog.py)의 `PRIORITY_MODELS`에 정의되어 있다.
 
@@ -33,6 +33,7 @@
   최신 `YOLO26` 계열 benchmark 후보다.
 
 이 둘은 [specs/catalog.py](/Users/hdy/code/portfolio/Gawee/front/onnx_rewrite/specs/catalog.py)의 `EXTENDED_BENCHMARK_MODELS`에 정의되어 있다.
+`distilbert_base_uncased`는 CPU 사용량 문제로 기본 benchmark 대상에서 제외했다.
 
 ## Supported Op Contract
 
@@ -124,13 +125,13 @@ throughput(samples/s) = 1000 / median_ms
 
 ## 현재 상태
 
-현재 priority 모델 3종에 대해서는 unsupported op 제거를 달성했다.
+현재 기본 priority 모델 기준으로는 unsupported op 제거를 진행한다.
 
 다만 성능 특성은 모델에 따라 다르다.
 
 - `resnet18`: legality 달성 + latency 거의 유지
 - `bert_tiny`: legality 달성 + correctness 통과, 하지만 graph blow-up으로 latency 악화
-- `distilbert_base_uncased`: legality 달성, 하지만 graph blow-up이 크고 current correctness gate를 약간 초과
+- `tinyllama_15m`: `RoPE`가 포함된 초소형 decoder LLM 후보로 교체 예정
 
 자세한 수치는 [report.md](/Users/hdy/code/portfolio/Gawee/front/onnx_rewrite/report.md)를 보면 된다.
 
@@ -176,13 +177,13 @@ Its current goal is simple:
 
 This is not a generic optimizer. It is a legality-first rewrite pipeline for a constrained operator set.
 
-The module already includes correctness validation and latency measurement, and currently removes unsupported ops for the three priority models.
+The module already includes correctness validation and latency measurement, and targets unsupported-op removal for the default priority models.
 
 ## Priority Models
 
 - `resnet18`
-- `distilbert_base_uncased`
 - `bert_tiny`
+- `tinyllama_15m`
 
 The model registry lives in [specs/catalog.py](/Users/hdy/code/portfolio/Gawee/front/onnx_rewrite/specs/catalog.py).
 
@@ -259,13 +260,13 @@ throughput(samples/s) = 1000 / median_ms
 
 ## Current Status
 
-All three priority models currently reach unsupported-op count zero after rewriting.
+The default priority set is now `resnet18`, `bert_tiny`, and `tinyllama_15m`.
 
 However, the performance characteristics differ by model:
 
 - `resnet18`: legality achieved with roughly preserved latency
 - `bert_tiny`: legality achieved and correctness passes, but graph blow-up causes large slowdown
-- `distilbert_base_uncased`: legality achieved, but graph blow-up is large and the current correctness gate is slightly exceeded
+- `tinyllama_15m`: selected to replace `distilbert` as the smaller RoPE-based decoder candidate
 
 See [report.md](/Users/hdy/code/portfolio/Gawee/front/onnx_rewrite/report.md) for the latest numbers.
 
