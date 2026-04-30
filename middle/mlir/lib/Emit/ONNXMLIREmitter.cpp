@@ -14,7 +14,6 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/Value.h"
-
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -963,6 +962,42 @@ bool ONNXMLIREmitter::emitLessOrEqual(
   return true;
 }
 
+bool ONNXMLIREmitter::emitLess(
+    const onnx::NodeProto &node,
+    llvm::StringMap<Value> &valueMap,
+    llvm::StringMap<RankedTensorType> &tensorTypes) {
+  auto loc = builder->getUnknownLoc();
+  if (node.input_size() != 2 || node.output_size() != 1) {
+    setError("Less expects exactly 2 inputs and 1 output");
+    return false;
+  }
+  Value lhs = lookupMappedValue(node.input(0), valueMap);
+  Value rhs = lookupMappedValue(node.input(1), valueMap);
+  auto resultType = lookupTensorType(node.output(0), tensorTypes);
+  if (!lhs || !rhs || !resultType) {
+    setError("Less operands or result type missing");
+    return false;
+  }
+  Type cmpType = cast<RankedTensorType>(lhs.getType()).getElementType();
+  SmallVector<Value> dynamicDims =
+      materializeBroadcastedDynamicDims(*builder, loc, resultType, lhs, rhs);
+  Value result = createBinaryElementwise(
+      *builder, loc, resultType, lhs, rhs, dynamicDims,
+      [&](OpBuilder &nestedBuilder, Location bodyLoc, Value lhsVal,
+          Value rhsVal) {
+        if (isa<FloatType>(cmpType)) {
+          return Value(arith::CmpFOp::create(
+              nestedBuilder, bodyLoc, arith::CmpFPredicate::OLT, lhsVal,
+              rhsVal));
+        }
+        return Value(arith::CmpIOp::create(
+            nestedBuilder, bodyLoc, arith::CmpIPredicate::slt, lhsVal,
+            rhsVal));
+      });
+  valueMap[node.output(0)] = result;
+  return true;
+}
+
 bool ONNXMLIREmitter::emitIsNaN(
     const onnx::NodeProto &node,
     llvm::StringMap<Value> &valueMap,
@@ -1097,8 +1132,8 @@ bool ONNXMLIREmitter::emitGather(
   Value data = lookupMappedValue(node.input(0), valueMap);
   Value indices = lookupMappedValue(node.input(1), valueMap);
   auto resultType = lookupTensorType(node.output(0), tensorTypes);
-  if (!data || !indices || !resultType) {
-    setError("Gather operands or result type missing");
+  if (!data || !indices) {
+    setError("Gather operands missing");
     return false;
   }
   auto dataType = dyn_cast<RankedTensorType>(data.getType());
@@ -1110,6 +1145,18 @@ bool ONNXMLIREmitter::emitGather(
   int64_t axis = getI64AttrFromNode(node, "axis", 0);
   if (axis < 0)
     axis += dataType.getRank();
+  if (!resultType) {
+    SmallVector<int64_t> outShape;
+    outShape.reserve(dataType.getRank() + indicesType.getRank() - 1);
+    for (int64_t dim = 0; dim < axis; ++dim)
+      outShape.push_back(dataType.getDimSize(dim));
+    for (int64_t dim = 0; dim < indicesType.getRank(); ++dim)
+      outShape.push_back(indicesType.getDimSize(dim));
+    for (int64_t dim = axis + 1; dim < dataType.getRank(); ++dim)
+      outShape.push_back(dataType.getDimSize(dim));
+    resultType =
+        RankedTensorType::get(outShape, dataType.getElementType());
+  }
   auto gatherOp = builder->create<GatherOp>(
       loc, resultType, data, indices, builder->getI64IntegerAttr(axis));
   valueMap[node.output(0)] = gatherOp.getResult();
@@ -1806,20 +1853,25 @@ bool ONNXMLIREmitter::emitShape(
     return false;
   }
 
-  auto resultType = lookupTensorType(node.output(0), tensorTypes);
-  if (!resultType) {
-    setError("Missing output tensor type for Shape output: " + node.output(0));
-    return false;
-  }
-
   auto inputType = dyn_cast<RankedTensorType>(input.getType());
-  int64_t rank = inputType ? inputType.getRank() : resultType.getDimSize(0);
+  int64_t rank = inputType ? inputType.getRank() : ShapedType::kDynamic;
   int64_t start = getI64AttrFromNode(node, "start", 0);
   int64_t end = getI64AttrFromNode(node, "end", rank);
   if (start < 0 && rank >= 0)
     start += rank;
   if (end < 0 && rank >= 0)
     end += rank;
+
+  auto resultType = lookupTensorType(node.output(0), tensorTypes);
+  if (!resultType) {
+    int64_t resultLength = ShapedType::kDynamic;
+    if (rank >= 0) {
+      int64_t clampedStart = std::clamp(start, int64_t{0}, rank);
+      int64_t clampedEnd = std::clamp(end, int64_t{0}, rank);
+      resultLength = std::max<int64_t>(0, clampedEnd - clampedStart);
+    }
+    resultType = RankedTensorType::get({resultLength}, builder->getI64Type());
+  }
 
   auto shapeOp = builder->create<ShapeOp>(
       loc,
@@ -2555,6 +2607,11 @@ bool ONNXMLIREmitter::emitTranspose(
     setError("Missing output tensor type for Transpose output: " + node.output(0));
     return false;
   }
+  auto inputType = dyn_cast<RankedTensorType>(input.getType());
+  if (!inputType) {
+    setError("Transpose expects ranked input");
+    return false;
+  }
 
   SmallVector<int64_t> perm;
   for (const auto &attr : node.attribute()) {
@@ -2567,6 +2624,16 @@ bool ONNXMLIREmitter::emitTranspose(
     for (int64_t dim = resultType.getRank() - 1; dim >= 0; --dim)
       perm.push_back(dim);
   }
+
+  SmallVector<int64_t> relaxedShape(resultType.getShape().begin(),
+                                    resultType.getShape().end());
+  for (int64_t outDim = 0; outDim < resultType.getRank(); ++outDim) {
+    int64_t inputDim = perm[outDim];
+    if (inputType.isDynamicDim(inputDim))
+      relaxedShape[outDim] = ShapedType::kDynamic;
+  }
+  resultType =
+      RankedTensorType::get(relaxedShape, resultType.getElementType());
 
   auto transposeOp = builder->create<TransposeOp>(
       loc, resultType, input, builder->getDenseI64ArrayAttr(perm));
@@ -3148,6 +3215,11 @@ OwningOpRef<ModuleOp> ONNXMLIREmitter::emitFromFile(llvm::StringRef onnxPath) {
     }
     if (node.op_type() == "And") {
       if (!emitAnd(node, valueMap, tensorTypes))
+        return nullptr;
+      continue;
+    }
+    if (node.op_type() == "Less") {
+      if (!emitLess(node, valueMap, tensorTypes))
         return nullptr;
       continue;
     }

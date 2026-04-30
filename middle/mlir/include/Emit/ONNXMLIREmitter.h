@@ -93,6 +93,9 @@ private:
   bool emitAnd(const onnx::NodeProto &node,
                llvm::StringMap<Value> &valueMap,
                llvm::StringMap<RankedTensorType> &tensorTypes);
+  bool emitLess(const onnx::NodeProto &node,
+                llvm::StringMap<Value> &valueMap,
+                llvm::StringMap<RankedTensorType> &tensorTypes);
   bool emitLessOrEqual(const onnx::NodeProto &node,
                        llvm::StringMap<Value> &valueMap,
                        llvm::StringMap<RankedTensorType> &tensorTypes);
