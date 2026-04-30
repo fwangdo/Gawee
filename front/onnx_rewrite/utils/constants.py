@@ -25,8 +25,8 @@ SUPPORTED_OPS: set[str] = {
 }
 
 PRIORITY_MODELS: dict[str, Path] = {
-    "distilbert_base_uncased": Path("benchmarks/onnx/nlp/distilbert_base_uncased/onnx/model.onnx"),
+    "bert_tiny": Path("benchmarks/onnx/nlp/bert_tiny/onnx/model.onnx"),
+    "tinyllama_15m": Path("benchmarks/onnx/nlp/tinyllama_15m/onnx/model.onnx"),
     "mobilebert_uncased": Path("benchmarks/onnx/nlp/mobilebert_uncased/onnx/model.onnx"),
     "mobilenetv3_small": Path("benchmarks/onnx/vision/mobilenetv3_small.onnx"),
 }
-

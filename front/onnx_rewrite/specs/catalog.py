@@ -28,6 +28,7 @@ SUPPORTED_OPS: frozenset[str] = frozenset(
         "HardSwish",
         "IsNaN",
         "LeakyRelu",
+        "Less",
         "LessOrEqual",
         "MatMul",
         "Max",
@@ -65,11 +66,14 @@ SUPPORTED_OPS: frozenset[str] = frozenset(
 
 PRIORITY_MODELS: dict[str, Path] = {
     "resnet18": Path("benchmarks/onnx/vision/resnet18.onnx"),
-    "distilbert_base_uncased": Path("benchmarks/onnx/nlp/distilbert_base_uncased/onnx/model.onnx"),
     "bert_tiny": Path("benchmarks/onnx/nlp/bert_tiny/onnx/model.onnx"),
+    "tinyllama_15m": Path("benchmarks/onnx/nlp/tinyllama_15m/onnx/model.onnx"),
 }
 
 EXTENDED_BENCHMARK_MODELS: dict[str, Path] = {
+    # Tiny RoPE-based decoder model that fits the CPU budget better than distilbert.
+    # We keep it in the default priority set above once fetched locally.
+    # Larger modern LLM kept as a stretch target.
     # Small RoPE-based decoder-only LLM with an explicit ONNX opset>=13 export.
     "qwen3_0_6b": Path("benchmarks/onnx/nlp/qwen3_0_6b/model.onnx"),
     # Latest Ultralytics YOLO family candidate. We export it locally to ONNX opset 17.
