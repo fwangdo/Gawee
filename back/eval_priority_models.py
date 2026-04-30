@@ -24,7 +24,7 @@ ARTIFACT_DIR = ROOT / "artifacts/back_eval"
 PRIORITY_MODELS = {
     "resnet18": ROOT / "artifacts/front_rewrite_bench/resnet18.onnx",
     "bert_tiny": ROOT / "artifacts/front_rewrite_bench/bert_tiny.onnx",
-    "distilbert_base_uncased": ROOT / "artifacts/front_rewrite_bench/distilbert_base_uncased.onnx",
+    "tinyllama_15m": ROOT / "benchmarks/onnx/nlp/tinyllama_15m/onnx/model.onnx",
 }
 
 # Static shape overrides for models with dynamic dimensions.
@@ -35,17 +35,38 @@ STATIC_SHAPE_OVERRIDES: dict[str, dict[str, list[int]]] = {
         "attention_mask": [1, 128],
         "token_type_ids": [1, 128],
     },
-    "distilbert_base_uncased": {
-        "input_ids": [1, 128],
-        "attention_mask": [1, 128],
+    "tinyllama_15m": {
+        "input_ids": [1, 1],
+        "attention_mask": [1, 2],
+        "position_ids": [1, 1],
+        "past_key_values.0.key": [1, 6, 1, 48],
+        "past_key_values.0.value": [1, 6, 1, 48],
+        "past_key_values.1.key": [1, 6, 1, 48],
+        "past_key_values.1.value": [1, 6, 1, 48],
+        "past_key_values.2.key": [1, 6, 1, 48],
+        "past_key_values.2.value": [1, 6, 1, 48],
+        "past_key_values.3.key": [1, 6, 1, 48],
+        "past_key_values.3.value": [1, 6, 1, 48],
+        "past_key_values.4.key": [1, 6, 1, 48],
+        "past_key_values.4.value": [1, 6, 1, 48],
+        "past_key_values.5.key": [1, 6, 1, 48],
+        "past_key_values.5.value": [1, 6, 1, 48],
     },
+}
+
+MODEL_OUTPUT_FILTERS: dict[str, list[str]] = {
+    "tinyllama_15m": ["logits"],
+}
+
+MODEL_ORT_OPT_LEVEL: dict[str, ort.GraphOptimizationLevel] = {
+    "tinyllama_15m": ort.GraphOptimizationLevel.ORT_ENABLE_BASIC,
 }
 
 # Per-model atol for correctness comparison.
 # NLP models accumulate more floating-point error than vision models.
 MODEL_ATOL: dict[str, float] = {
-    "distilbert_base_uncased": 5e-4,
     "bert_tiny": 5e-4,
+    "tinyllama_15m": 5e-4,
 }
 
 
@@ -141,6 +162,43 @@ def infer_model(src: Path, dst: Path) -> StageResult:
         return StageResult(True, f"value_info={len(inferred.graph.value_info)}", str(dst))
     except Exception as exc:  # pragma: no cover - diagnostic path
         return StageResult(False, str(exc), None)
+
+
+def strip_initializer_inputs(model: onnx.ModelProto) -> onnx.ModelProto:
+    initializer_names = {init.name for init in model.graph.initializer}
+    kept = [value for value in model.graph.input if value.name not in initializer_names]
+    del model.graph.input[:]
+    model.graph.input.extend(kept)
+    return model
+
+
+def optimize_model_with_ort(
+    src: Path,
+    dst: Path,
+    level: ort.GraphOptimizationLevel,
+) -> StageResult:
+    try:
+        session_options = ort.SessionOptions()
+        session_options.graph_optimization_level = level
+        session_options.optimized_model_filepath = str(dst)
+        ort.InferenceSession(str(src), sess_options=session_options, providers=["CPUExecutionProvider"])
+        optimized = onnx.load(dst)
+        optimized = strip_initializer_inputs(optimized)
+        onnx.save(optimized, dst)
+        return StageResult(True, level.name, str(dst))
+    except Exception as exc:  # pragma: no cover - diagnostic path
+        return StageResult(False, str(exc), None)
+
+
+def filter_model_outputs(model: onnx.ModelProto, keep_outputs: list[str]) -> onnx.ModelProto:
+    wanted = set(keep_outputs)
+    kept = [value for value in model.graph.output if value.name in wanted]
+    if len(kept) != len(keep_outputs):
+        missing = [name for name in keep_outputs if name not in {value.name for value in kept}]
+        raise ValueError(f"missing requested outputs: {missing}")
+    del model.graph.output[:]
+    model.graph.output.extend(kept)
+    return model
 
 
 def run_translate(src: Path, dst: Path) -> StageResult:
@@ -249,10 +307,13 @@ def make_feed_dict(model: onnx.ModelProto) -> dict[str, np.ndarray] | None:
         if shape is None:
             return None
         elem_type = value.type.tensor_type.elem_type
+        name = value.name.lower()
         if elem_type == onnx.TensorProto.INT64:
-            feed[value.name] = rng.integers(0, 4, size=shape, dtype=np.int64)
+            high = 2 if ("attention_mask" in name or "token_type_ids" in name) else 4
+            feed[value.name] = rng.integers(0, high, size=shape, dtype=np.int64)
         elif elem_type == onnx.TensorProto.INT32:
-            feed[value.name] = rng.integers(0, 4, size=shape, dtype=np.int32)
+            high = 2 if ("attention_mask" in name or "token_type_ids" in name) else 4
+            feed[value.name] = rng.integers(0, high, size=shape, dtype=np.int32)
         else:
             feed[value.name] = rng.standard_normal(size=shape).astype(np.float32)
     return feed
@@ -424,12 +485,25 @@ def evaluate_model(name: str, model_path: Path) -> ModelReport:
         try:
             raw = onnx.load(model_path)
             fixed = bind_static_shapes(raw, overrides)
+            output_filter = MODEL_OUTPUT_FILTERS.get(name)
+            if output_filter is not None:
+                fixed = filter_model_outputs(fixed, output_filter)
             fixed_path = model_dir / "static.onnx"
             onnx.save(fixed, fixed_path)
             src_path = fixed_path
             notes.append(f"bound static shapes: {overrides}")
         except Exception as exc:
             return ModelReport(name, str(model_path), StageResult(False, f"shape bind: {exc}"), StageResult(False, "skipped"), StageResult(False, "skipped"), StageResult(False, "skipped"), StageResult(False, "skipped"), None, None, notes)
+
+    opt_level = MODEL_ORT_OPT_LEVEL.get(name)
+    if opt_level is not None:
+        optimized_path = model_dir / "optimized.onnx"
+        optimized = optimize_model_with_ort(src_path, optimized_path, opt_level)
+        if optimized.ok:
+            src_path = optimized_path
+            notes.append(f"optimized with onnxruntime: {optimized.detail}")
+        else:
+            notes.append(f"onnxruntime optimization skipped: {optimized.detail}")
 
     inferred_path = model_dir / "inferred.onnx"
     inferred = infer_model(src_path, inferred_path)
