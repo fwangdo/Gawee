@@ -3,34 +3,42 @@
 이 디렉토리는 `Gawee`에서 parser / rewrite / quantization 실험에 공통으로 쓸 benchmark 모델을 모아 두는 곳이다.
 대용량 바이너리 자체는 저장소에 커밋하지 않고, 공개 소스에서 재현 시점에 다시 내려받는다.
 
-## Current Priority Trio
+## Priority Models (correctness 검증 완료)
 
-graph rewrite의 근시일 우선 모델은 아래 3개다.
+MLIR lowering end-to-end correctness가 확인된 모델:
 
-- `onnx/vision/resnet18.onnx`
-- `onnx/nlp/distilbert_base_uncased/onnx/model.onnx`
-- `onnx/nlp/bert_tiny/onnx/model.onnx`
+- `onnx/vision/resnet18.onnx` — vision baseline
+- `onnx/nlp/bert_tiny/onnx/model.onnx` — transformer encoder
+- `onnx/nlp/tinyllama_15m/onnx/model.onnx` — RoPE 포함 decoder LLM
 
-즉 현재 우선순위는 `vision 1개 + NLP 2개` 조합이다.
+## Extended Models (확장 대상)
+
+- `onnx/vision/yolo26_nano/onnx/model.onnx` — object detection (397 nodes)
+- `onnx/nlp/smollm_135m/onnx/model.onnx` — 30-layer decoder LLM (2844 nodes)
+- `onnx/vision/yolo26_n/model.onnx` — YOLO variant
+- `onnx/nlp/qwen3_0_6b/model.onnx` — 대형 decoder (semantic op 확인용)
 
 현재 frontend benchmark scope는 `ai.onnx opset >= 13` 모델만 대상으로 한다.
 
 ## Vision
 
 - `onnx/vision/resnet18.onnx`
-
-`torchvision`에서 로컬 export한다.
-가중치는 benchmark graph 확보가 목적이므로 우선 `weights=None`으로 고정한다.
+  - `torchvision`에서 ���컬 export
+- `onnx/vision/yolo26_nano/onnx/model.onnx`
+  - 397 nodes, Conv/Sigmoid 위주의 detection 모델
+  - 미지원 op: `TopK`, `ReduceMax`
 
 ## NLP
 
 - `onnx/nlp/bert_tiny/onnx/model.onnx`
   - source: `onnx-community/bert-tiny-finetuned-sms-spam-detection-ONNX`
-  - link: `https://huggingface.co/onnx-community/bert-tiny-finetuned-sms-spam-detection-ONNX/tree/358e80a313103279be7292e32d112091c91de10b/onnx`
-  - note: `prajjwal1/bert-tiny`의 직접 ONNX 파일이 공개되어 있지 않아, 우선 loadable한 `bert-tiny` 계열 ONNX 대체물로 확보
-- `onnx/nlp/distilbert_base_uncased/onnx/model.onnx`
-  - source: `onnx-community/distilbert-base-uncased-ONNX`
-  - link: `https://huggingface.co/onnx-community/distilbert-base-uncased-ONNX/tree/a5d2f36/onnx`
+  - 186 nodes, encoder-only transformer
+- `onnx/nlp/tinyllama_15m/onnx/model.onnx`
+  - source: optimum export, 6-layer decoder with RoPE
+- `onnx/nlp/smollm_135m/onnx/model.onnx`
+  - source: `HuggingFaceTB/SmolLM-135M`
+  - 2844 nodes, 30-layer decoder, 514MB
+  - 미지원 op: `Trilu`, `ScatterND`, `Greater`
 
 ## Reproduction
 

@@ -1,6 +1,7 @@
 # gawee
 
 [![English](https://img.shields.io/badge/lang-English-blue)](README.en.md)
+| [End-to-End 실행 가이드](how.md)
 
 `gawee`는 ONNX 모델을 받아 그래프 rewrite를 수행하고, MLIR 기반 파이프라인
 (`Gawee Dialect -> Linalg -> SCF/LLVM`)으로 lowering해서 AOT 실행 파일까지
@@ -13,11 +14,18 @@
 
 ## 현재 상태
 
-| 모델 | ONNX Emission | Gawee -> Linalg | Full LLVM/AOT | 비고 |
-| --- | --- | --- | --- | --- |
-| ResNet-18 | pass | pass | pass | AOT 실행 및 수치 검증 경로 확보 |
-| bert_tiny | pass | pass | pass | `Gather` semantic op 유지 후 correctness 통과 |
-| tinyllama_15m | 준비 중 | 준비 중 | 준비 중 | `RoPE`가 들어간 초소형 decoder LLM 후보 |
+| 모델 | ONNX Emission | Gawee -> Linalg | Full LLVM/AOT | Correctness | 비고 |
+| --- | --- | --- | --- | --- | --- |
+| ResNet-18 | pass | pass | pass | pass (5.25e-06) | vision baseline |
+| bert_tiny | pass | pass | pass | pass (1.79e-07) | transformer encoder |
+| tinyllama_15m | pass | pass | pass | pass (1.62e-05) | RoPE 포함 decoder LLM |
+
+### Extended Benchmarks (확장 대상)
+
+| 모델 | 타입 | 노드 수 | 비고 |
+| --- | --- | --- | --- |
+| yolo26_nano | vision/detection | 397 | Conv/Sigmoid 기반, TopK/ReduceMax 미지원 |
+| smollm_135m | nlp/decoder | 2844 | 30-layer, Trilu/ScatterND 미지원 |
 
 ### 이번 단계에서 늘린 지원 범위
 
@@ -131,25 +139,17 @@ ONNX Model
 
 ## 검증 메모
 
-이번 semantic op 확장 이후 확인한 내용:
+3개 priority 모델 모두 원본 ONNX에서 end-to-end correctness 통과:
 
-- `resnet18`
-  - ONNX emission 통과
-  - `gawee-to-llvm` 통과
-- `bert_tiny`
-  - ONNX emission 통과
-  - `gawee-to-llvm` 통과
-  - correctness 통과
-- `qwen3_0_6b`
-  - ONNX emission 통과
-  - `convert-gawee-to-linalg` 통과
-  - `gawee.range`의 dynamic length legalization 문제를 수정
+- `resnet18`: max_abs_diff = 5.25e-06 (atol=1e-4)
+- `bert_tiny`: max_abs_diff = 1.79e-07 (atol=5e-4)
+- `tinyllama_15m`: max_abs_diff = 1.62e-05 (atol=5e-4)
 
-`distilbert_base_uncased`는 CPU 사용량 때문에 기본 benchmark/eval 대상에서 제외했습니다.
-그 자리는 `tinyllama_15m`로 대체해, 더 작은 체급에서 `RoPE`가 포함된 modern decoder 경로를 먼저 보려 합니다.
+원본 ONNX를 직접 MLIR 파이프라인에 태운다.
+Frontend rewrite된 ONNX는 노드 수 증가로 FP 오차가 누적되므로 사용하지 않는다.
 
-`qwen`은 모듈이 커서 full LLVM 파이프라인 자체가 오래 걸리므로,
-현재는 확장 benchmark로 두고 "semantic op가 MLIR 단계에서 illegal로 남지 않는다"는 것을 우선 기준으로 봅니다.
+`distilbert_base_uncased`는 모델이 커서 dev 머신 행을 유발하므로 영구 제외.
+`qwen3_0_6b`은 확장 benchmark로 두고, semantic op illegal 여부만 우선 확인한다.
 
 ---
 
