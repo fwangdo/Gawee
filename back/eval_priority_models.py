@@ -22,8 +22,8 @@ BACK_BUILD = ROOT / "back/build"
 ARTIFACT_DIR = ROOT / "artifacts/back_eval"
 
 PRIORITY_MODELS = {
-    "resnet18": ROOT / "artifacts/front_rewrite_bench/resnet18.onnx",
-    "bert_tiny": ROOT / "artifacts/front_rewrite_bench/bert_tiny.onnx",
+    "resnet18": ROOT / "benchmarks/onnx/vision/resnet18.onnx",
+    "bert_tiny": ROOT / "benchmarks/onnx/nlp/bert_tiny/onnx/model.onnx",
     "tinyllama_15m": ROOT / "benchmarks/onnx/nlp/tinyllama_15m/onnx/model.onnx",
 }
 

@@ -271,12 +271,18 @@ This file tracks what you need to study and practice.
     - the backend execution path is closed
     - the result is numerically aligned on the current saved-input check
     - the current AOT latency includes file I/O and process launch, so it is only a coarse baseline
-- `bert_tiny`, `distilbert_base_uncased`
-  - translator and several dynamic lowering blockers were improved
-  - but end-to-end LLVM/AOT/correctness are not closed yet
-  - next focus:
-    - dynamic shape + broadcast cleanup
-    - slice/reduce/reshape correctness under bufferization
+- `bert_tiny` ✅
+  - all pipeline stages pass (translate, loops, llvm, aot build)
+  - correctness PASS: max_abs_diff = 1.79e-07 (threshold 5e-4)
+  - uses original ONNX directly (186 nodes, MatMul/Gemm-based)
+  - 이전 실패 원인: frontend-rewritten ONNX(254 nodes)의 FP 오차 누적
+  - NOTE: frontend rewrite는 현재 검증 범위 밖. MLIR lowering correctness 확보가 우선.
+- `tinyllama_15m` ✅
+  - all pipeline stages pass
+  - correctness PASS: max_abs_diff = 1.62e-05 (threshold 5e-4)
+- `distilbert_base_uncased` — **permanently excluded**
+  - too large, causes system hangs on dev machine
+  - removed from PRIORITY_MODELS, do NOT re-add
 
 ---
 
