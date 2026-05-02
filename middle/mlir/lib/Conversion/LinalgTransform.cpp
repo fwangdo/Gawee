@@ -42,12 +42,17 @@
 #include "Conversion/GaweePasses.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/Transforms/TileUsingInterface.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/Dialect/Utils/StructuredOpsUtils.h"
+#include "mlir/Interfaces/TilingInterface.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/Operation.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/TypeSwitch.h"
@@ -442,10 +447,40 @@ static void tileConvLikeOps(ModuleOp module) {
 
   for (const ConvTilingPlan &plan : plans) {
     describeConvPlan(plan);
-    // Future work:
-    //   - convert the plan into real linalg tiling options
-    //   - apply transform::TileUsingForallOp or equivalent helpers
-    //   - optionally follow with fusion of bias / relu consumers
+
+    auto tilingIface = dyn_cast<TilingInterface>(plan.operation);
+    if (!tilingIface) {
+      plan.operation->emitRemark() << "conv op does not implement "
+                                      "TilingInterface, skipping tiling";
+      continue;
+    }
+
+    // Conv2D NCHW_FCHW has 7 loops: N, C_out, H, W, C_in, KH, KW.
+    // parallelTileSizes covers the first 4 (parallel dims).
+    // Pad with 0s for the remaining reduction dims (no tiling).
+    unsigned numLoops = cast<linalg::LinalgOp>(plan.operation).getNumLoops();
+    SmallVector<int64_t> fullTileSizes(numLoops, 0);
+    for (unsigned i = 0; i < plan.parallelTileSizes.size() && i < numLoops;
+         ++i) {
+      fullTileSizes[i] = plan.parallelTileSizes[i];
+    }
+
+    SmallVector<OpFoldResult> tileSizes =
+        getAsIndexOpFoldResult(module.getContext(), fullTileSizes);
+
+    scf::SCFTilingOptions options;
+    options.setTileSizes(tileSizes);
+
+    IRRewriter rewriter(module.getContext());
+    rewriter.setInsertionPoint(plan.operation);
+    FailureOr<scf::SCFTilingResult> result =
+        scf::tileUsingSCF(rewriter, tilingIface, options);
+    if (failed(result)) {
+      plan.operation->emitWarning() << "conv tiling failed";
+      continue;
+    }
+
+    rewriter.replaceOp(plan.operation, result->replacements);
   }
 }
 
@@ -460,10 +495,30 @@ static void tileMatmulLikeOps(ModuleOp module) {
 
   for (const MatmulTilingPlan &plan : plans) {
     describeMatmulPlan(plan);
-    // Future work:
-    //   - map tileSizes to real M/N/K blocking
-    //   - consider bias/add fusion after blocking
-    //   - decide whether vectorization should follow immediately
+
+    auto tilingIface = dyn_cast<TilingInterface>(plan.operation);
+    if (!tilingIface) {
+      plan.operation->emitRemark() << "matmul op does not implement "
+                                      "TilingInterface, skipping tiling";
+      continue;
+    }
+
+    SmallVector<OpFoldResult> tileSizes =
+        getAsIndexOpFoldResult(module.getContext(), plan.tileSizes);
+
+    scf::SCFTilingOptions options;
+    options.setTileSizes(tileSizes);
+
+    IRRewriter rewriter(module.getContext());
+    rewriter.setInsertionPoint(plan.operation);
+    FailureOr<scf::SCFTilingResult> result =
+        scf::tileUsingSCF(rewriter, tilingIface, options);
+    if (failed(result)) {
+      plan.operation->emitWarning() << "matmul tiling failed";
+      continue;
+    }
+
+    rewriter.replaceOp(plan.operation, result->replacements);
   }
 }
 
@@ -525,7 +580,7 @@ struct LinalgTransformPass
   }
 
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<linalg::LinalgDialect>();
+    registry.insert<linalg::LinalgDialect, scf::SCFDialect>();
   }
 
   void runOnOperation() override {

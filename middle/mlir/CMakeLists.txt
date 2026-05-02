@@ -151,6 +151,8 @@ target_link_libraries(GaweeConversion
   MLIRLinalgDialect
   MLIRTensorDialect
   MLIRArithDialect
+  MLIRSCFDialect
+  MLIRSCFTransforms
   MLIRTransforms
 )
 
