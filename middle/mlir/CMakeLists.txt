@@ -155,6 +155,8 @@ target_link_libraries(GaweeConversion
   MLIRSCFDialect
   MLIRSCFTransforms
   MLIRTransforms
+  MLIRVectorDialect
+  MLIRVectorTransforms
 )
 
 #===----------------------------------------------------------------------===#
@@ -202,6 +204,8 @@ target_link_libraries(gawee-opt
   MLIRMathToLLVM
   MLIRMathToLibm
   MLIRMemRefToLLVM
+  MLIRVectorToLLVM
+  MLIRVectorToLLVMPass
   MLIRSCFToControlFlow
   MLIRReconcileUnrealizedCasts
   MLIRIR

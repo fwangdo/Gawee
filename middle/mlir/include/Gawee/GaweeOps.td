@@ -553,6 +553,17 @@ def Gawee_TileOp : Gawee_Op<"tile", []> {
   let results = (outs AnyTensor:$output);
 }
 
+def Gawee_TopKOp : Gawee_Op<"topk", []> {
+  let summary = "Top-K values and indices along one axis";
+  let arguments = (ins
+    AnyTensor:$input,
+    I64Attr:$k,
+    I64Attr:$axis
+  );
+  // result 0 = values, result 1 = indices (unnamed to avoid OpAsmOpInterface trait)
+  let results = (outs AnyTensor, AnyTensor);
+}
+
 def Gawee_CastOp : Gawee_Op<"cast", []> {
   let summary = "Tensor cast";
   let arguments = (ins

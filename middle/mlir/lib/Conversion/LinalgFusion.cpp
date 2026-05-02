@@ -19,10 +19,13 @@
 #include "Conversion/GaweePasses.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/SmallString.h"
 
 using namespace mlir;
@@ -125,12 +128,16 @@ struct LinalgFusionPass
   void runOnOperation() override {
     ModuleOp module = getOperation();
 
-    // Intended future order inside this pass:
-    //   1. collect producer/consumer chains
-    //   2. classify elementwise-only fusion opportunities
-    //   3. classify structured-op + post-op fusion opportunities
-    //   4. separate legal fusion from profitable fusion
+    // 1. Analyze and tag fusion candidates (for diagnostics).
     analyzeProducerConsumerChains(module);
+
+    // 2. Apply actual elementwise fusion.
+    // This fuses chains of elementwise linalg.generic ops by merging
+    // a producer's body into its consumer, eliminating intermediate tensors.
+    RewritePatternSet patterns(module.getContext());
+    linalg::ControlFusionFn controlFn = [](OpOperand *) { return true; };
+    linalg::populateElementwiseOpsFusionPatterns(patterns, controlFn);
+    (void)applyPatternsGreedily(module, std::move(patterns));
   }
 };
 

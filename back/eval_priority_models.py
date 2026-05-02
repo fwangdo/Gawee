@@ -470,7 +470,7 @@ def compare_with_ort(model_path: Path, runner: Path, inputs_dir: Path, outputs_d
     }, latency
 
 
-def evaluate_model(name: str, model_path: Path) -> ModelReport:
+def evaluate_model(name: str, model_path: Path, *, baseline: bool = False) -> ModelReport:
     model_dir = ARTIFACT_DIR / name
     if model_dir.exists():
         shutil.rmtree(model_dir)
@@ -515,10 +515,11 @@ def evaluate_model(name: str, model_path: Path) -> ModelReport:
     if not translated.ok:
         return ModelReport(name, str(model_path), inferred, translated, StageResult(False, "skipped"), StageResult(False, "skipped"), StageResult(False, "skipped"), None, None, notes)
 
+    llvm_pipeline = "gawee-to-llvm-baseline" if baseline else "gawee-to-llvm"
     loops_path = model_dir / "loops.mlir"
     loops = run_lower("gawee-to-loops", translated_path, loops_path)
     llvm_path = model_dir / "llvm.mlir"
-    llvm = run_lower("gawee-to-llvm", translated_path, llvm_path)
+    llvm = run_lower(llvm_pipeline, translated_path, llvm_path)
 
     if loops.ok and has_dynamic_shape_signature(loops_path):
         notes.append("AOT runner currently supports only static-shape memref signatures.")
@@ -605,6 +606,11 @@ def parse_args() -> argparse.Namespace:
         default=ARTIFACT_DIR,
         help="Directory for generated reports and intermediates.",
     )
+    parser.add_argument(
+        "--baseline",
+        action="store_true",
+        help="Use gawee-to-llvm-baseline pipeline (no linalg optimizations).",
+    )
     return parser.parse_args()
 
 
@@ -614,7 +620,7 @@ def main() -> int:
     ARTIFACT_DIR = args.report_dir
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
 
-    reports = [evaluate_model(name, path) for name, path in PRIORITY_MODELS.items()]
+    reports = [evaluate_model(name, path, baseline=args.baseline) for name, path in PRIORITY_MODELS.items()]
     json_path = ARTIFACT_DIR / "priority_models_report.json"
     md_path = ARTIFACT_DIR / "priority_models_report.md"
     json_path.write_text(json.dumps([asdict(report) for report in reports], indent=2))

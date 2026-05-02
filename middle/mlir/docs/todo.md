@@ -11,9 +11,6 @@ This file tracks what you need to study and practice.
 - [x] `include/Gawee/GaweeOps.td` - Op TableGen definitions
 - [x] `lib/Gawee/GaweeDialect.cpp` - Dialect C++ implementation
 
-### Study Materials
-- [x] (No summary/quiz yet - dialect definition basics)
-
 ### Key Concepts
 - TableGen syntax (.td files)
 - Dialect declaration
@@ -26,10 +23,6 @@ This file tracks what you need to study and practice.
 
 ### Files to Read
 - [x] `lib/Conversion/GaweeToLinalg.cpp` - Conversion pass implementation
-
-### Study Materials
-- [x] **Read**: `docs/GaweeToLinalg_Summary.md`
-- [x] **Practice**: `docs/GaweeToLinalg_Quiz.cpp`
 
 ### Key Concepts
 - OpConversionPattern
@@ -45,267 +38,153 @@ This file tracks what you need to study and practice.
 ### Files to Read
 - [x] `tools/gawee-opt.cpp` - Optimizer tool
 
-### Study Materials
-- [x] **Read**: `docs/gawee-opt_Summary.md`
-- [x] **Practice**: `docs/gawee-opt_Quiz.cpp`
-
 ### Key Concepts
 - DialectRegistry
 - PassPipelineRegistration
 - MlirOptMain
 - getDependentDialects
-- RTTI settings
 
 ---
 
 ## Phase 5: Linalg → Loops ✅ COMPLETED
-
-### Files to Read
-- [x] `scripts/full_pipeline.sh` - Pipeline script
-
-### Study Materials
-- [x] **Read**: `docs/LinalgToLoops_Summary.md`
-- [x] **Practice**: `docs/LinalgToLoops_Quiz.md`
-- [x] **Bonus**: `docs/ShellScript_Summary.md`
-- [x] **Bonus**: `docs/ShellScript_Quiz.sh`
 
 ### Key Concepts
 - Bufferization (tensor → memref)
 - Linalg to loops conversion
 - MLIR built-in passes
 
-### Pipeline Clarification
-- `Gawee -> Linalg` and `Linalg -> SCF` are not the same step
-- There is now an explicit middle slot for `Linalg`-level transforms
-- Typical work in that slot: tiling, fusion, scheduling, vectorization prep
+---
 
-### Direction After Lowering
-- Saying "I experienced AI compiler middle-end broadly" now requires more than legalization and bufferization
-- The missing center of gravity is optimization-oriented middle-end work:
-  - real tiling
-  - real fusion
-  - real scheduling
-  - real vectorization prep / vector lowering
-  - correctness + latency verification loop
-- Current codebase status:
-  - legalization/lowering: implemented
-  - bufferization pipeline: wired
-  - end-to-end AOT execution: wired
-  - optimization passes: implemented as heuristic planning / annotation passes
-  - pre-bufferization cleanup: implemented for `tensor.empty` and no-op `tensor.cast`
+## Phase 7: Middle-End Optimization Pipeline 🔄 CURRENT
+
+### 현재 상태 (2026-05-03)
+
+#### Pass별 구현 상태
+
+| Pass | 상태 | IR 변형 | API |
+|------|------|---------|-----|
+| LinalgTransform | ✅ 동작 | tiling + tile loop interchange | `scf::tileUsingSCF` |
+| LinalgFusion | ✅ 동작 | elementwise generic fusion | `populateElementwiseOpsFusionPatterns` |
+| LinalgScheduling | ✅ 동작 | generic interchange + loop peeling | `interchangeGenericOp`, `peelForLoopAndSimplifyBounds` |
+| LinalgVectorization | ⚠ 비활성 | (코드 있음, MLIR crash) | `linalg::vectorize` |
+| LinalgVerification | ✅ 동작 | 분석/진단만 | attr + remark |
+| Canonicalize + CSE | ✅ 동작 | cleanup (3곳 삽입) | `createCanonicalizerPass`, `createCSEPass` |
+| LICM | ✅ 동작 | loop invariant hoist | `createLoopInvariantCodeMotionPass` |
+| VectorToLLVM | ✅ 등록됨 | (vectorization 비활성이라 no-op) | `createConvertVectorToLLVMPass` |
+| BufferizePrep | ✅ 동작 | tensor.empty→alloc_tensor | 커스텀 |
+| DecomposeAggregated | ✅ 동작 | softmax 등 분해 | 커스텀 |
+
+#### Pipeline 순서
+
+```
+GaweeToLinalg
+  → LinalgTransform (tiling + interchange)
+  → Canonicalize + CSE
+  → LinalgFusion (elementwise fusion)
+  → LinalgScheduling (generic interchange + peeling)
+  → Canonicalize + CSE
+  → LinalgVectorization (비활성)
+  → LinalgVerification
+  → DecomposeAggregated
+  → EmptyTensorToAllocTensor
+  → BufferizePrep
+  → OneShotBufferize
+  → Canonicalize + CSE
+  → LinalgToLoops
+  → LICM
+  → SCFToControlFlow
+  → ExpandStridedMetadata + LowerAffine
+  → CWrappers
+  → MathToLibm → MathToLLVM → ArithToLLVM → CFToLLVM → VectorToLLVM → MemRefToLLVM → FuncToLLVM
+  → ReconcileUnrealizedCasts
+```
+
+#### Correctness
+
+| model | 상태 | max_abs_diff | atol |
+|-------|------|-------------|------|
+| resnet18 | ✅ PASS | 5.25e-06 | 1e-4 |
+| bert_tiny | ✅ PASS | 1.79e-07 | 5e-4 |
+| tinyllama_15m | ✅ PASS | 1.62e-05 | 5e-4 |
+
+#### Latency (Gawee p50 vs ORT median)
+
+| model | baseline (ms) | optimized (ms) | ORT (ms) | Gawee/ORT |
+|-------|--------------|----------------|----------|-----------|
+| resnet18 | 6575 | 6814 | 17 | 400x |
+| bert_tiny | AOT fail | 354 | 0.6 | 590x |
+| tinyllama_15m | 100 | 108 | 1.7 | 63x |
 
 ---
 
-## Phase 6: JSON → Gawee MLIR (Translator) ◻ OPTIONAL / LOW PRIORITY
+### 성능 분석
 
-### Files to Read
-- [ ] `include/Emit/MLIREmitter.h` - Emitter header
-- [ ] `lib/Emit/MLIREmitter.cpp` - Emitter implementation
-- [ ] `tools/gawee-translate.cpp` - Translator tool
+#### 왜 baseline 대비 개선이 없는가
 
-### Study Materials
-- [ ] **Read**: `docs/MLIREmitter_Summary.md`
-- [ ] **Practice**: `docs/MLIREmitter_Quiz.cpp`
+현재 optimized가 baseline보다 오히려 **약간 느리다** (resnet18: 0.96x, tinyllama: 0.93x).
 
-### Key Concepts
-- mlir-opt vs mlir-translate
-- OpBuilder usage
-- Value mapping (string → mlir::Value)
-- RankedTensorType creation
-- LLVM JSON API
-- Topological ordering
+원인:
+1. **tiling이 loop overhead 추가** — outer loop + inner loop로 분할되면서 loop 제어 비용 증가
+2. **그 overhead를 상쇄할 최적화 부재**:
+   - fusion: 동작하지만 elementwise generic끼리만 합침. tiled loop 안의 producer를 끌어오는 tile-and-fuse는 미구현
+   - vectorization: MLIR crash로 비활성. scalar 연산만 사용
+   - canonicalize/CSE/LICM: 정리할 redundant op이 적어서 실질 영향 없음
+3. **tiling 자체의 가치**: tiling은 단독으로는 성능을 올리지 않는다.
+   tiling + fusion + vectorization이 조합되어야 cache locality + SIMD가 동시에 달성됨
 
-### Why This Is Low Priority Now
-- the emitter is useful, but comparatively straightforward
-- it does not teach the hard part of the middle-end
-- current study priority should be:
-  - `Linalg` transform reasoning
-  - bufferization
-  - `SCF`
-  - LLVM lowering
-  - end-to-end IR reconstruction
+#### ORT 대비 100~600x 느린 원인 분해
+
+| 원인 | 예상 배수 | 설명 |
+|------|----------|------|
+| Vectorization 없음 | 8-16x | SIMD 미사용 (ARM NEON 128bit = f32 4개 동시) |
+| Tile-and-Fuse 없음 | 2-4x | 중간 텐서를 매번 메모리에 write/read |
+| Micro-kernel 없음 | 4-8x | ORT는 hand-tuned GEMM kernel 사용 |
+| LLVM backend 차이 | 2-4x | ORT는 MKL/Eigen 수준 최적화 |
+
+8 × 3 × 6 × 3 ≈ 400x, resnet18의 실측과 일치.
+
+#### 성능 개선 가능 지점 (우선순위 순)
+
+**1. Tile-and-Fuse — 가장 현실적 (예상 2-4x)**
+- 현재: tiling(LinalgTransform)과 fusion(LinalgFusion)이 별도 pass
+- 문제: tiling 후 생긴 scf.for 안의 tiled op은 elementwise fusion 대상이 아님
+- 해결: `scf::tileConsumerAndFuseProducersUsingSCF()`로 tiling 시 producer를 동시에 fusion
+- 효과: conv+bias+relu가 한 tile loop에서 실행 → 중간 full-size 텐서 할당 제거
+- 복잡도: LinalgTransform.cpp의 tileConvLikeOps/tileMatmulLikeOps 재구성 필요
+
+**2. Vectorization — 가장 큰 단일 개선 (예상 8-16x, 현재 blocked)**
+- MLIR 내부 crash: `VectorizationState::getOrCreateMaskFor`에서 segfault
+- broadcast indexing map이 있는 generic op에서 발생
+- 코드는 작성 완료 (LinalgVectorization.cpp), 후보 선별 로직도 있음
+- 해결 경로:
+  a. MLIR 버전 업그레이드 (masked vectorization 버그 수정 기대)
+  b. loop-level vectorization (bufferize → LinalgToLoops 후, innermost scf.for를 직접 변환)
+  c. vectorize 대상을 더 좁게 — broadcast 없는 pure identity map generic만
+
+**3. 조합 효과**
+- tile-and-fuse + vectorization = 실질적 성능 전환점
+- tiling으로 small tile → vectorize로 SIMD → fused loop에서 cache 재사용
+- 이 조합이 ORT 대비 10-20x까지 좁힐 수 있는 현실적 목표
 
 ---
 
-## Phase 7: Linalg Transform → Bufferize → SCF → LLVM 🔄 CURRENT
+### 다음 단계
 
-### Files to Read
-- [ ] `lib/Conversion/LinalgTransform.cpp`
-- [ ] `lib/Conversion/LinalgFusion.cpp`
-- [ ] `lib/Conversion/LinalgScheduling.cpp`
-- [ ] `lib/Conversion/LinalgVectorization.cpp`
-- [ ] `lib/Conversion/LinalgVerification.cpp`
-- [ ] `lib/Conversion/BufferizePrep.cpp`
-- [ ] `tools/gawee-opt.cpp` - Look at `--scf-to-llvm` pipeline
-- [ ] `scripts/to_llvm_ir.sh` - LLVM IR generation script
-- [ ] `test/llvm_test.mlir` - Test file for LLVM lowering
-
-### Study Materials
-- [ ] **Read**: `docs/LLVMLowering_Summary.md`
-- [ ] **Practice**: `docs/LLVMLowering_Quiz.cpp`
-- [x] `explanation/01_LinalgTransform.md` ~ `08_Pipeline_BigPicture.md`
-
-### Key Concepts
-- real tiling rewrite vs tiling metadata
-- fusion planning vs real fusion rewrite
-- scheduling hints vs actual loop reorder
-- vectorization prep vs real vector lowering
-- bufferization preparation
-- Dialect hierarchy (high → low level)
-- SCF → CF (structured → unstructured control flow)
-- MemRef → LLVM struct representation
-- Multiple conversion passes and order
-- UnrealizedConversionCast
-- mlir-translate (MLIR ↔ LLVM IR)
-
-### Updated Mental Model
-- Step 1: `Gawee -> Linalg` legalization
-- Step 2: tiling pass
-  - current file: `lib/Conversion/LinalgTransform.cpp`
-  - current implementation:
-    - inspect conv / matmul / generic families
-    - choose tile-size hints
-    - attach explicit `gawee.transform.*` attrs
-  - intended ownership: tiling decisions before loop lowering
-- Step 3: fusion pass
-  - current file: `lib/Conversion/LinalgFusion.cpp`
-  - current implementation:
-    - detect simple single-use producer/consumer pairs
-    - attach `gawee.fusion.group` / role attrs
-  - intended ownership: producer/consumer fusion and post-op fusion planning
-- Step 4: scheduling pass
-  - current file: `lib/Conversion/LinalgScheduling.cpp`
-  - current implementation:
-    - count parallel vs reduction loops
-    - attach loop-interchange and scheduling-hint attrs
-  - intended ownership: loop order / parallel / reduction scheduling decisions
-- Step 5: vectorization pass
-  - current file: `lib/Conversion/LinalgVectorization.cpp`
-  - current implementation:
-    - attach vectorization kind + width hints
-    - record static-result readiness
-  - intended ownership: vectorization readiness and vector-lowering preparation
-- Step 6: verification pass
-  - current file: `lib/Conversion/LinalgVerification.cpp`
-  - current implementation:
-    - summarize linalg coverage at module level
-    - mark per-op verification status attrs
-  - intended ownership: transform precondition checks and IR-side verification hooks
-- Step 7: bufferization preparation
-  - current file: `lib/Conversion/BufferizePrep.cpp`
-  - current implementation:
-    - replace `tensor.empty` with `bufferization.alloc_tensor`
-    - fold no-op `tensor.cast`
-    - attach destination-style bufferization attrs
-  - intended ownership: pre-bufferization cleanup and normalization
-- Step 8: one-shot bufferization (`tensor -> memref`)
-- Step 9: `Linalg(memref) -> SCF`
-- Step 10: `SCF -> CF -> LLVM`
-
-### Explanation Writing Plan
-- [x] `explanation/01_LinalgTransform.md` ✅
-  - explain why this is still `Linalg -> Linalg`, not `Linalg -> SCF`
-  - explain planning structs, heuristics, remarks, and attrs
-- [x] `explanation/02_LinalgFusion.md` ✅
-  - explain producer/consumer detection, fusion groups, and current limits
-- [x] `explanation/03_LinalgScheduling.md` ✅
-  - explain loop classification, interchange hints, and scheduling attrs
-- [x] `explanation/04_LinalgVectorization.md` ✅
-  - explain width hints, static-result checks, and vector-prep intent
-- [x] `explanation/05_LinalgVerification.md` ✅
-  - explain module-level verification summary and per-op verification attrs
-- [x] `explanation/06_BufferizePrep.md` ✅
-  - explain why `tensor.empty` / `tensor.cast` are normalized before bufferization
-- [x] `explanation/07_gawee-opt_pipeline.md` ✅
-  - explain how the pass pipeline is assembled from `Linalg` transforms through LLVM lowering
-- [x] `explanation/08_Pipeline_BigPicture.md` ✅
-  - explain the end-to-end story:
-    `Gawee -> Linalg -> transform/fusion/scheduling/vector/verify -> bufferize -> SCF -> CF -> LLVM`
-
-### Middle-end Completion Direction
-- To honestly say "I covered the middle-end broadly", target this sequence:
-  1. replace attr-level tiling hints with real conv/matmul tiling rewrites
-  2. replace fusion grouping attrs with at least one real producer-consumer fusion rewrite
-  3. replace scheduling hints with at least one concrete loop reorder / parallel choice
-  4. replace vectorization hints with a real vector-friendly lowering step
-  5. connect verification attrs to correctness/latency experiments in `back/`
-- In other words:
-  - "lowering works" is the starting point
-  - "performance transforms + verification loop work" is the fuller middle-end story
-
-### Training Goal
-- do not stop at "I know one lowering function"
-- be able to rebuild, alone, the full path:
-  - `Gawee op understanding`
-  - `Gawee -> Linalg`
-  - `Linalg transform/fusion/scheduling/vector/verify`
-  - `BufferizePrep`
-  - `OneShotBufferize`
-  - `Linalg -> SCF`
-  - `SCF -> LLVM`
-  - `LLVM dialect -> LLVM IR`
-
-### Concrete Practice Order
-1. rebuild `Conv`, `Linear`, `Reshape`, `Transpose`, `Softmax` lowerings by hand
-2. explain and re-implement the planning passes in plain words
-3. trace one `resnet18` subgraph from `Linalg` to `SCF`
-4. trace the same subgraph from `SCF` to LLVM dialect
-5. dump final LLVM IR and explain where each major op went
-6. only after that, return to emitter if needed
-
-### Current Backend Status
-- `resnet18`
-  - `gawee-to-loops`: passes
-  - `gawee-to-llvm`: passes
-  - AOT runner build: passes
-  - AOT runner execution: passes
-  - output shape matches ONNX Runtime: `(1, 1000)`
-  - correctness now matches ONNX Runtime on the saved evaluation input:
-    - `max_abs_diff ~= 2.86e-06`
-    - `mean_abs_diff ~= 6.07e-07`
-    - `np.allclose(..., atol=1e-4, rtol=1e-4)` passes
-  - current latency baseline:
-    - Gawee AOT end-to-end runner: about `6.52s ~ 6.59s`
-    - ONNX Runtime inference-only: about `15.4ms ~ 17.4ms`
-  - interpretation:
-    - the backend execution path is closed
-    - the result is numerically aligned on the current saved-input check
-    - the current AOT latency includes file I/O and process launch, so it is only a coarse baseline
-- `bert_tiny` ✅
-  - all pipeline stages pass (translate, loops, llvm, aot build)
-  - correctness PASS: max_abs_diff = 1.79e-07 (threshold 5e-4)
-  - uses original ONNX directly (186 nodes, MatMul/Gemm-based)
-  - 이전 실패 원인: frontend-rewritten ONNX(254 nodes)의 FP 오차 누적
-  - NOTE: frontend rewrite는 현재 검증 범위 밖. MLIR lowering correctness 확보가 우선.
-- `tinyllama_15m` ✅
-  - all pipeline stages pass
-  - correctness PASS: max_abs_diff = 1.62e-05 (threshold 5e-4)
-- `distilbert_base_uncased` — **permanently excluded**
-  - too large, causes system hangs on dev machine
-  - removed from PRIORITY_MODELS, do NOT re-add
+- [ ] **tile-and-fuse 구현** (LinalgTransform.cpp에서 `tileConsumerAndFuseProducersUsingSCF` 사용)
+- [ ] **vectorization crash 우회** (MLIR 업그레이드 또는 loop-level 접근)
+- [ ] explanation 파일 업데이트 (02_LinalgFusion.md 등 현재 코드 반영)
+- [ ] delta.md에 tile-and-fuse 후 재측정 결과 기록
 
 ---
 
 ## Phase 8: Extension (Your Own Work)
-
-### Guide Files (Comment-only scaffolds)
-- [ ] **Read**: `docs/extension/00_Extension_Checklist.md` - Master checklist
-- [ ] `docs/extension/01_GaweeOps_Extension.td` - Add MaxPool, BatchNorm ops
-- [ ] `docs/extension/02_GaweeToLinalg_Extension.cpp` - Lowering patterns
-- [ ] `docs/extension/03_MLIREmitter_Extension.cpp` - JSON emission
 
 ### Tasks
 - [ ] Add `gawee.maxpool` op to dialect
 - [ ] Add `gawee.batchnorm` op to dialect
 - [ ] Implement `MaxPoolOpLowering`
 - [ ] Implement `BatchNormOpLowering`
-- [ ] Implement `emitMaxPool()` in MLIREmitter
-- [ ] Implement `emitBatchNorm()` in MLIREmitter
 - [ ] Test full pipeline with new ops
-- [ ] (Optional) Add bias support to conv
-
-### Goal
-Full support for ResNet-like models with all common ops.
 
 ---
 
@@ -313,47 +192,31 @@ Full support for ResNet-like models with all common ops.
 
 ### Build Commands
 ```bash
-./build.sh                                    # Build everything
+cd middle/mlir && ./build.sh
 ```
 
 ### Test Commands
 ```bash
-# Phase 3-5: Gawee → Linalg → Loops
-./build/gawee-opt --convert-gawee-to-linalg test/simple_test.mlir
-./build/gawee-opt --gawee-to-loops test/simple_test.mlir
+# Full pipeline: Gawee → LLVM
+./build/gawee-opt --gawee-to-llvm test/simple_test.mlir
 
-# Phase 6: JSON → MLIR
-./build/gawee-translate test/subset_graph.json
+# Baseline (no linalg optimizations)
+./build/gawee-opt --gawee-to-llvm-baseline test/simple_test.mlir
 
-# Phase 7: SCF → LLVM
-./build/gawee-opt --scf-to-llvm test/llvm_test.mlir
-./scripts/to_llvm_ir.sh test/llvm_test.mlir output.ll
-
-# Full pipeline: JSON → LLVM
-./build/gawee-translate test/subset_graph.json | ./build/gawee-opt --gawee-to-llvm
-
-# Phase 8 (Extension): Test your new ops
-./build/gawee-opt --convert-gawee-to-linalg test/extension_test.mlir
-./build/gawee-translate test/extension_graph.json | ./build/gawee-opt --gawee-to-llvm
+# Backend evaluation (all priority models)
+python back/eval_priority_models.py
+python back/eval_priority_models.py --baseline
 ```
-
-### Study Order (Recommended)
-1. Phase 3 (GaweeToLinalg) - Core pattern rewriting
-2. Phase 4 (gawee-opt) - Pipeline structure
-3. Phase 7 (Linalg transform → LLVM) - Main study target
-4. Phase 5 (LinalgToLoops) - Bufferization and loop lowering details
-5. Phase 6 (MLIREmitter) - Optional reinforcement, not main bottleneck
 
 ---
 
 ## Progress Tracker
 
-| Phase | Summary Read | Quiz Done | Code Understood |
-|-------|--------------|-----------|-----------------|
-| 2     | N/A          | N/A       | [x] ✅          |
-| 3     | [x]          | [x]       | [x] ✅          |
-| 4     | [x]          | [x]       | [x] ✅          |
-| 5     | [x]          | [x]       | [x] ✅          |
-| 6     | [ ] optional | [ ]       | [ ]             |
-| 7     | [ ] **NEXT** | [ ]       | [ ]             |
-| 8     | N/A (guides) | N/A       | [ ] (implement) |
+| Phase | Status |
+|-------|--------|
+| 2 - Dialect definition | ✅ |
+| 3 - GaweeToLinalg | ✅ |
+| 4 - gawee-opt tool | ✅ |
+| 5 - Linalg → Loops | ✅ |
+| 7 - Middle-end optimization | 🔄 tiling/fusion/scheduling/CSE/LICM 동작, vectorization blocked |
+| 8 - Extension ops | ◻ |
