@@ -104,6 +104,7 @@ struct ConvTilingPlan {
   Operation *operation = nullptr;
   linalg::LinalgOp op;
   SmallVector<int64_t> parallelTileSizes;
+  SmallVector<int64_t> interchangeVector;
   bool tileOutputSpatialLoops = false;
   bool tileChannelLoop = false;
   TransformPriority priority = TransformPriority::Low;
@@ -114,6 +115,7 @@ struct MatmulTilingPlan {
   Operation *operation = nullptr;
   linalg::LinalgOp op;
   SmallVector<int64_t> tileSizes;
+  SmallVector<int64_t> interchangeVector;
   bool tileReductionLoop = false;
   TransformPriority priority = TransformPriority::Low;
   SmallString<128> rationale;
@@ -279,6 +281,22 @@ static ConvTilingPlan buildConvPlan(linalg::LinalgOp linalgOp) {
                "is inferred.");
   }
 
+  // Tile loop interchange for conv.
+  // Conv2D NCHW_FCHW has 7 loops: N(0), C_out(1), H(2), W(3), C_in(4), KH(5), KW(6).
+  // Default tiled loop order is (N, C_out, H, W, ...).
+  // Reorder to (N, H, W, C_out, ...) so that spatial dims are outermost,
+  // improving locality for NCHW output layout.
+  unsigned numLoops = linalgOp.getNumLoops();
+  if (numLoops >= 4 && plan.tileOutputSpatialLoops) {
+    // Only interchange the tiled (parallel) dims: 0->0, 1->2, 2->3, 3->1.
+    // Untiled reduction dims keep their relative order.
+    plan.interchangeVector = {0, 2, 3, 1};
+    for (unsigned i = 4; i < numLoops; ++i)
+      plan.interchangeVector.push_back(i);
+    appendText(plan.rationale,
+               "Tile loop interchange: (N,H,W,C_out) for spatial locality.");
+  }
+
   return plan;
 }
 
@@ -325,6 +343,9 @@ static MatmulTilingPlan buildMatmulPlan(linalg::LinalgOp linalgOp) {
                "Reduction tiling is explicitly marked because matmul often "
                "benefits from K blocking.");
   }
+
+  // Matmul loop order (M, N, K) is already good: output dims (M, N) are
+  // outermost and reduction (K) is innermost. No interchange needed.
 
   return plan;
 }
@@ -438,7 +459,7 @@ static void describeGenericPlan(const GenericTransformPlan &plan) {
 }
 
 static void tileConvLikeOps(ModuleOp module) {
-  SmallVector<ConvTilingPlan> plans;
+  SmallVector<ConvTilingPlan, 2> plans;
   module.walk([&](Operation *op) {
     if (!isConvLikeOp(op)) {
       return;
@@ -471,6 +492,8 @@ static void tileConvLikeOps(ModuleOp module) {
 
     scf::SCFTilingOptions options;
     options.setTileSizes(tileSizes);
+    if (!plan.interchangeVector.empty())
+      options.setInterchange(plan.interchangeVector);
 
     IRRewriter rewriter(module.getContext());
     rewriter.setInsertionPoint(plan.operation);
@@ -486,7 +509,7 @@ static void tileConvLikeOps(ModuleOp module) {
 }
 
 static void tileMatmulLikeOps(ModuleOp module) {
-  SmallVector<MatmulTilingPlan> plans;
+  SmallVector<MatmulTilingPlan, 2> plans;
   module.walk([&](Operation *op) {
     if (!isMatmulLikeOp(op)) {
       return;
@@ -509,6 +532,8 @@ static void tileMatmulLikeOps(ModuleOp module) {
 
     scf::SCFTilingOptions options;
     options.setTileSizes(tileSizes);
+    if (!plan.interchangeVector.empty())
+      options.setInterchange(plan.interchangeVector);
 
     IRRewriter rewriter(module.getContext());
     rewriter.setInsertionPoint(plan.operation);
