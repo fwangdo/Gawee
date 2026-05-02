@@ -9,12 +9,16 @@
 //   - for linalg.generic ops with mixed parallel/reduction iterators,
 //     applies interchangeGenericOp to bring parallel loops before reductions
 //   - named ops (matmul, conv) have fixed loop order and are left unchanged
+//   - peels tail iterations from scf.for loops so that main loop bodies
+//     contain only full tiles (preparation for future vectorization)
 //===----------------------------------------------------------------------===//
 
 #include "Conversion/GaweePasses.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/PatternMatch.h"
@@ -68,21 +72,55 @@ static void applyLoopInterchange(ModuleOp module) {
   }
 }
 
+/// Peel tail iterations from scf.for loops produced by tiling.
+///
+/// After tiling, a loop like `for i = 0 to 14 step 8` has iterations where
+/// the last tile is partial (covers only indices 8..13 instead of a full
+/// 8-element tile). Peeling splits this into:
+///   - main loop:   for i = 0 to 8 step 8   (always full tiles)
+///   - tail loop:   for i = 8 to 14 step 8  (partial remainder)
+///
+/// The main loop body can then be safely vectorized because every iteration
+/// processes exactly `step` elements.
+///
+/// Peeling is skipped automatically when it is unnecessary:
+///   - step == 1 (every iteration is trivially "full")
+///   - bounds are already evenly divisible by step
+///   - bounds or step are dynamic (conservative skip)
+static void applyLoopPeeling(ModuleOp module) {
+  // Collect ForOps first, because peeling creates new ForOps and we don't
+  // want to visit those during the same walk.
+  SmallVector<scf::ForOp> forOps;
+  module.walk([&](scf::ForOp forOp) { forOps.push_back(forOp); });
+
+  IRRewriter rewriter(module.getContext());
+  for (scf::ForOp forOp : forOps) {
+    scf::ForOp partialIteration;
+    // peelForLoopAndSimplifyBounds returns failure when peeling is not
+    // applicable (step==1, already divides evenly, dynamic bounds, etc.).
+    // That is expected — just skip.
+    (void)scf::peelForLoopAndSimplifyBounds(rewriter, forOp,
+                                            partialIteration);
+  }
+}
+
 struct LinalgSchedulingPass
     : public PassWrapper<LinalgSchedulingPass,
                          OperationPass<ModuleOp>> {
   StringRef getArgument() const override { return "gawee-linalg-scheduling"; }
 
   StringRef getDescription() const override {
-    return "Post-lowering Linalg loop interchange pass";
+    return "Post-lowering Linalg loop interchange and peeling pass";
   }
 
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<linalg::LinalgDialect>();
+    registry.insert<linalg::LinalgDialect, scf::SCFDialect>();
   }
 
   void runOnOperation() override {
-    applyLoopInterchange(getOperation());
+    ModuleOp module = getOperation();
+    applyLoopInterchange(module);
+    applyLoopPeeling(module);
   }
 };
 
