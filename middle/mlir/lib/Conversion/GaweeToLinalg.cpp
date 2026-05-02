@@ -1571,6 +1571,138 @@ struct ReduceSumOpLowering : public OpConversionPattern<gawee::ReduceSumOp> {
   }
 };
 
+// TopK: selection-sort approach.
+// For each batch element, find top-k values by iterating k times,
+// each time finding the max over the reduction axis (masking already-selected).
+struct TopKOpLowering : public OpConversionPattern<gawee::TopKOp> {
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(gawee::TopKOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value input = adaptor.getInput();
+    auto inputType = mlir::cast<RankedTensorType>(input.getType());
+    auto valuesType = mlir::cast<RankedTensorType>(op->getResult(0).getType());
+    auto indicesType = mlir::cast<RankedTensorType>(op->getResult(1).getType());
+    Type elemType = inputType.getElementType();
+    int64_t k = op.getK();
+    int64_t axis = op.getAxis();
+    if (axis < 0)
+      axis += inputType.getRank();
+
+    // Only support rank-2, axis=1 for now (matches emitter constraint).
+    if (inputType.getRank() != 2 || axis != 1)
+      return rewriter.notifyMatchFailure(op, "TopK supports rank-2 axis=1 only");
+
+    int64_t inputLen = inputType.getShape()[1];
+    if (inputLen == ShapedType::kDynamic)
+      return rewriter.notifyMatchFailure(op, "TopK requires static reduction dim");
+
+    Value c0 = arith::ConstantOp::create(rewriter, loc, rewriter.getIndexAttr(0));
+    Value c1 = arith::ConstantOp::create(rewriter, loc, rewriter.getIndexAttr(1));
+    // Batch dim can be dynamic — query at runtime.
+    Value batchUB = tensor::DimOp::create(rewriter, loc, input, 0);
+    Value inputLenIdx = arith::ConstantOp::create(rewriter, loc, rewriter.getIndexAttr(inputLen));
+    Value kIdx = arith::ConstantOp::create(rewriter, loc, rewriter.getIndexAttr(k));
+
+    Value negInf = arith::ConstantOp::create(
+        rewriter, loc,
+        rewriter.getFloatAttr(elemType, -std::numeric_limits<double>::infinity()));
+    Value zeroI64 = arith::ConstantOp::create(
+        rewriter, loc, rewriter.getI64IntegerAttr(0));
+
+    // Create output tensors filled with -inf / 0.
+    // Use dynamic dims from input for batch dimension.
+    SmallVector<Value> valDynDims, idxDynDims, usedDynDims;
+    if (valuesType.isDynamicDim(0))
+      valDynDims.push_back(batchUB);
+    if (indicesType.isDynamicDim(0))
+      idxDynDims.push_back(batchUB);
+
+    Value valuesInit = rewriter.create<tensor::EmptyOp>(
+        loc, valuesType.getShape(), elemType, valDynDims);
+    Value indicesInit = rewriter.create<tensor::EmptyOp>(
+        loc, indicesType.getShape(), rewriter.getI64Type(), idxDynDims);
+    valuesInit = linalg::FillOp::create(rewriter, loc, negInf, valuesInit).getResult(0);
+    indicesInit = linalg::FillOp::create(rewriter, loc, zeroI64, indicesInit).getResult(0);
+
+    // Create a "used" mask tensor: [batch, inputLen] of i1, initially false.
+    Value falseCst = arith::ConstantOp::create(rewriter, loc, rewriter.getBoolAttr(false));
+    SmallVector<int64_t> usedShape{inputType.getShape()[0], inputLen};
+    SmallVector<Value> usedDims;
+    if (inputType.isDynamicDim(0))
+      usedDims.push_back(batchUB);
+    Value usedInit = rewriter.create<tensor::EmptyOp>(
+        loc, usedShape, rewriter.getI1Type(), usedDims);
+    usedInit = linalg::FillOp::create(rewriter, loc, falseCst, usedInit).getResult(0);
+
+    // Outer loop: batch
+    auto batchLoop = scf::ForOp::create(
+        rewriter, loc, c0, batchUB, c1,
+        ValueRange{valuesInit, indicesInit, usedInit},
+        [&](OpBuilder &b1, Location loc1, Value batch, ValueRange state1) {
+          Value vals = state1[0], idxs = state1[1], used = state1[2];
+
+          // Inner loop: k iterations (selection sort)
+          auto kLoop = scf::ForOp::create(
+              b1, loc1, c0, kIdx, c1, ValueRange{vals, idxs, used},
+              [&](OpBuilder &b2, Location loc2, Value ki, ValueRange state2) {
+                Value curVals = state2[0], curIdxs = state2[1], curUsed = state2[2];
+
+                // Find max over inputLen, skipping used positions.
+                Value bestVal = negInf;
+                Value bestIdx = c0;
+
+                auto scanLoop = scf::ForOp::create(
+                    b2, loc2, c0, inputLenIdx, c1,
+                    ValueRange{bestVal, bestIdx},
+                    [&](OpBuilder &b3, Location loc3, Value j, ValueRange state3) {
+                      Value bv = state3[0], bi = state3[1];
+                      Value isUsed = tensor::ExtractOp::create(
+                          b3, loc3, curUsed, ValueRange{batch, j});
+                      Value val = tensor::ExtractOp::create(
+                          b3, loc3, input, ValueRange{batch, j});
+                      Value gt = arith::CmpFOp::create(
+                          b3, loc3, arith::CmpFPredicate::OGT, val, bv);
+                      Value notUsed = arith::XOrIOp::create(
+                          b3, loc3, isUsed,
+                          arith::ConstantOp::create(b3, loc3,
+                              b3.getI1Type(), b3.getBoolAttr(true)));
+                      Value cond = arith::AndIOp::create(b3, loc3, notUsed, gt);
+                      Value newBv = arith::SelectOp::create(b3, loc3, cond, val, bv);
+                      Value newBi = arith::SelectOp::create(b3, loc3, cond, j, bi);
+                      scf::YieldOp::create(b3, loc3, ValueRange{newBv, newBi});
+                    });
+
+                Value foundVal = scanLoop.getResult(0);
+                Value foundIdx = scanLoop.getResult(1);
+
+                // Write to output tensors.
+                Value nextVals = tensor::InsertOp::create(
+                    b2, loc2, foundVal, curVals, ValueRange{batch, ki});
+                Value foundIdxI64 = arith::IndexCastOp::create(
+                    b2, loc2, b2.getI64Type(), foundIdx);
+                Value nextIdxs = tensor::InsertOp::create(
+                    b2, loc2, foundIdxI64, curIdxs, ValueRange{batch, ki});
+
+                // Mark this position as used.
+                Value trueCst = arith::ConstantOp::create(
+                    b2, loc2, b2.getBoolAttr(true));
+                Value nextUsed = tensor::InsertOp::create(
+                    b2, loc2, trueCst, curUsed, ValueRange{batch, foundIdx});
+
+                scf::YieldOp::create(b2, loc2, ValueRange{nextVals, nextIdxs, nextUsed});
+              });
+
+          scf::YieldOp::create(b1, loc1,
+              ValueRange{kLoop.getResult(0), kLoop.getResult(1), kLoop.getResult(2)});
+        });
+
+    rewriter.replaceOp(op, ValueRange{batchLoop.getResult(0), batchLoop.getResult(1)});
+    return success();
+  }
+};
+
 struct ReshapeOpLowering : public OpConversionPattern<gawee::ReshapeOp> {
   using OpConversionPattern::OpConversionPattern;
   LogicalResult
@@ -2821,6 +2953,7 @@ struct GaweeToLinalgPass
     patterns.add<TileOpLowering>(ctx);
     patterns.add<PadOpLowering>(ctx);
     patterns.add<CastOpLowering>(ctx);
+    patterns.add<TopKOpLowering>(ctx);
 
     // Run conversion
     if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
