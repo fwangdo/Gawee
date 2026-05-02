@@ -42,6 +42,7 @@
 #include "Conversion/GaweePasses.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Linalg/Transforms/TilingInterfaceImpl.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/TileUsingInterface.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
@@ -581,6 +582,7 @@ struct LinalgTransformPass
 
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<linalg::LinalgDialect, scf::SCFDialect>();
+    linalg::registerTilingInterfaceExternalModels(registry);
   }
 
   void runOnOperation() override {

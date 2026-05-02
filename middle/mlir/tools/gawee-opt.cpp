@@ -32,6 +32,7 @@
 #include "mlir/Dialect/LLVMIR/Transforms/Passes.h"
 #include "mlir/Dialect/Linalg/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/SCF/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Tensor/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -84,7 +85,10 @@ int main(int argc, char **argv) {
         pm.addPass(gawee::createLinalgVectorizationPass());
         pm.addPass(gawee::createLinalgVerificationPass());
 
-        // Step 3: Bufferization preparation slot
+        // Step 3a: Convert tensor.empty to bufferization.alloc_tensor
+        pm.addPass(bufferization::createEmptyTensorToAllocTensorPass());
+
+        // Step 3b: Bufferization preparation slot
         pm.addPass(gawee::createGaweeBufferizePrepPass());
 
         // Step 4: Bufferize (tensor -> memref)
@@ -193,6 +197,7 @@ int main(int argc, char **argv) {
   // These tell one-shot-bufferize how to bufferize ops from each dialect
   arith::registerBufferizableOpInterfaceExternalModels(registry);
   linalg::registerBufferizableOpInterfaceExternalModels(registry);
+  scf::registerBufferizableOpInterfaceExternalModels(registry);
   tensor::registerBufferizableOpInterfaceExternalModels(registry);
   bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
       registry);

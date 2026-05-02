@@ -2,25 +2,22 @@
 // Linalg Scheduling Pass
 //===----------------------------------------------------------------------===//
 //
-// This pass is the intended home for loop/order decisions that should happen
-// after tiling/fusion planning and before bufferization / loop lowering.
-//
-// Typical future responsibilities:
-//   - loop reordering
-//   - parallel loop selection
-//   - reduction-friendly scheduling
-//   - deciding which loop structure should survive into SCF
+// This pass applies loop reordering decisions after tiling/fusion and before
+// bufferization / loop lowering.
 //
 // Current behavior:
-//   - no IR mutation
-//   - emits remarks about loop structure and scheduling pressure
+//   - for linalg.generic ops with mixed parallel/reduction iterators,
+//     applies interchangeGenericOp to bring parallel loops before reductions
+//   - named ops (matmul, conv) have fixed loop order and are left unchanged
 //===----------------------------------------------------------------------===//
 
 #include "Conversion/GaweePasses.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/SmallString.h"
 
@@ -28,54 +25,47 @@ using namespace mlir;
 
 namespace {
 
-static void analyzeLoopSchedulingNeeds(ModuleOp module) {
-  Builder builder(module.getContext());
-  module.walk([&](linalg::LinalgOp op) {
+/// Check if the interchange vector is the identity permutation.
+static bool isIdentityPermutation(ArrayRef<unsigned> perm) {
+  for (unsigned i = 0; i < perm.size(); ++i) {
+    if (perm[i] != i)
+      return false;
+  }
+  return true;
+}
+
+static void applyLoopInterchange(ModuleOp module) {
+  SmallVector<linalg::GenericOp> candidates;
+  module.walk([&](linalg::GenericOp op) { candidates.push_back(op); });
+
+  IRRewriter rewriter(module.getContext());
+  for (linalg::GenericOp op : candidates) {
     auto iteratorTypes = op.getIteratorTypesArray();
-    int64_t parallelCount = 0;
-    int64_t reductionCount = 0;
-    SmallVector<int64_t> parallelLoops;
-    SmallVector<int64_t> reductionLoops;
-    SmallVector<int64_t> interchange;
-    interchange.reserve(iteratorTypes.size());
 
-    for (int64_t i = 0, e = iteratorTypes.size(); i < e; ++i) {
+    // Build interchange: parallel loops first, then reductions.
+    SmallVector<unsigned> interchange;
+    for (unsigned i = 0; i < iteratorTypes.size(); ++i) {
       if (iteratorTypes[i] == utils::IteratorType::parallel)
-        parallelLoops.push_back(i);
+        interchange.push_back(i);
+    }
+    for (unsigned i = 0; i < iteratorTypes.size(); ++i) {
       if (iteratorTypes[i] == utils::IteratorType::reduction)
-        reductionLoops.push_back(i);
-    }
-    interchange.append(parallelLoops.begin(), parallelLoops.end());
-    interchange.append(reductionLoops.begin(), reductionLoops.end());
-
-    for (utils::IteratorType iteratorType : iteratorTypes) {
-      if (iteratorType == utils::IteratorType::parallel)
-        ++parallelCount;
-      if (iteratorType == utils::IteratorType::reduction)
-        ++reductionCount;
+        interchange.push_back(i);
     }
 
-    SmallString<128> message;
-    llvm::raw_svector_ostream os(message);
-    os << "scheduling plan: parallel_loops=" << parallelCount
-       << ", reduction_loops=" << reductionCount;
-    if (reductionCount > 0)
-      os << ", reduction ordering likely matters";
-    else
-      os << ", loop reorder/parallel split is the likely next lever";
+    // Skip if already in the right order or no reductions present.
+    if (interchange.size() != iteratorTypes.size() ||
+        isIdentityPermutation(interchange))
+      continue;
 
-    op->setAttr("gawee.schedule.parallel_loops",
-                builder.getDenseI64ArrayAttr(parallelLoops));
-    op->setAttr("gawee.schedule.reduction_loops",
-                builder.getDenseI64ArrayAttr(reductionLoops));
-    op->setAttr("gawee.schedule.interchange",
-                builder.getDenseI64ArrayAttr(interchange));
-    op->setAttr(
-        "gawee.schedule.kind",
-        builder.getStringAttr(reductionCount > 0 ? "reduction-aware"
-                                                 : "parallel-first"));
-    op->emitRemark() << os.str();
-  });
+    rewriter.setInsertionPoint(op);
+    FailureOr<linalg::GenericOp> result =
+        linalg::interchangeGenericOp(rewriter, op, interchange);
+    if (failed(result)) {
+      op->emitRemark() << "loop interchange failed";
+      continue;
+    }
+  }
 }
 
 struct LinalgSchedulingPass
@@ -84,7 +74,7 @@ struct LinalgSchedulingPass
   StringRef getArgument() const override { return "gawee-linalg-scheduling"; }
 
   StringRef getDescription() const override {
-    return "Post-lowering Linalg scheduling planning pass";
+    return "Post-lowering Linalg loop interchange pass";
   }
 
   void getDependentDialects(DialectRegistry &registry) const override {
@@ -92,7 +82,7 @@ struct LinalgSchedulingPass
   }
 
   void runOnOperation() override {
-    analyzeLoopSchedulingNeeds(getOperation());
+    applyLoopInterchange(getOperation());
   }
 };
 

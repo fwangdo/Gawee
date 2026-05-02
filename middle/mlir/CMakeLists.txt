@@ -149,6 +149,7 @@ target_link_libraries(GaweeConversion
   PUBLIC
   GaweeDialect
   MLIRLinalgDialect
+  MLIRLinalgTransforms
   MLIRTensorDialect
   MLIRArithDialect
   MLIRSCFDialect
@@ -187,6 +188,7 @@ target_link_libraries(gawee-opt
   MLIRArithDialect
   MLIRArithTransforms
   MLIRSCFDialect
+  MLIRSCFTransforms
   MLIRMemRefDialect
   MLIRBufferizationDialect
   MLIRBufferizationTransforms
