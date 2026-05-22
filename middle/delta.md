@@ -4,18 +4,89 @@
 
 | Pass | 상태 | 설명 |
 |------|------|------|
-| LinalgTransform | 동작 | tiling (conv/matmul) + tile loop interchange |
-| LinalgFusion | **동작** | elementwise generic fusion (`populateElementwiseOpsFusionPatterns`) |
-| LinalgScheduling | 동작 | generic interchange + loop peeling |
-| LinalgVectorization | 비활성 | `linalg::vectorize()` crash (masked vectorization bug in MLIR build) |
-| LinalgVerification | 동작 | 검증/진단 |
-| Canonicalize + CSE | **동작** | tiling 후, scheduling 후, bufferization 후에 삽입 |
-| LICM | **동작** | LinalgToLoops 후 loop invariant code motion |
-| VectorToLLVM | **동작** | pipeline에 등록됨 (vectorization 비활��이므로 현재 no-op) |
+| LinalgTransform | ✅ 동작 | tiling (conv/matmul) + tile loop interchange |
+| LinalgFusion | ✅ 동작 | elementwise generic fusion (`populateElementwiseOpsFusionPatterns`) |
+| LinalgScheduling | ✅ 동작 | generic interchange + loop peeling |
+| LinalgVectorization | ✅ 동작 | projected-permutation elementwise (broadcast 포함), maxDim≤32 |
+| LinalgVerification | ✅ 동작 | 검증/진단 |
+| Canonicalize + CSE | ✅ 동작 | tiling 후, scheduling 후, bufferization 후에 삽입 |
+| LICM | ✅ 동작 | LinalgToLoops 후 loop invariant code motion |
+| VectorToSCF | ✅ 동작 | vector.transfer_read/write → SCF loops |
+| VectorToLLVM | ✅ 동작 | vector → LLVM lowering |
+| UBToLLVM | ✅ 동작 | ub.poison → LLVM undef |
 
 ## Baseline vs Optimized Latency
 
-Gawee p50 latency (ms), ORT median for reference. Date: 2026-05-03.
+Gawee p50 latency (ms), ORT median for reference.
+
+### 2026-05-22c (opt -O2 + fusion 비활성화)
+
+| model | baseline (ms) | optimized (ms) | speedup | ORT (ms) |
+|-------|--------------|----------------|---------|----------|
+| resnet18 | 1701 | 1722 | 0.99x | 16 |
+| bert_tiny | 63 | 62 | **1.02x** | 0.6 |
+| tinyllama_15m | 59 | 62 | 0.95x | 1.4 |
+
+**변경사항:**
+- AOT 파이프라인에 `opt -O2` 추가 (llc 전에 실행)
+  - `llc`는 codegen만 수행 (instruction selection, register allocation)
+  - `opt`가 LLVM middle-end 최적화 수행: LoopVectorize, SLPVectorize, GVN, LICM 등
+  - 이전: `mlir-translate → llc → clang++`
+  - 이후: `mlir-translate → opt -O2 → llc -O2 → clang++`
+- LinalgFusion 비활성화 (elementwise fusion)
+  - `populateElementwiseOpsFusionPatterns`이 생성하는 fused generic op의 복잡한 affine indexing이 LLVM LoopVectorize를 방해
+  - ablation: fusion ON → bert_tiny 111ms, fusion OFF → bert_tiny 62ms
+
+**분석 — 절대 성능 대폭 개선 (이전 세션 대비):**
+- resnet18: 6490ms → 1722ms (**3.8x**)
+- bert_tiny: 265ms → 62ms (**4.3x**)
+- tinyllama_15m: 101ms → 62ms (**1.6x**)
+- 핵심: `opt -O2`의 LoopVectorize가 scalar loops를 SIMD화 (ARM NEON)
+
+**분석 — MLIR 최적화 vs baseline:**
+- 전 모델 baseline과 동등 (0.95x ~ 1.02x)
+- MLIR 패스가 더 이상 성능을 악화시키지 않음
+- 아직 baseline 대비 의미있는 개선은 없음 — MLIR 패스가 LLVM auto-vectorizer에 추가 가치를 제공하지 못하는 상태
+
+### 2026-05-22b (opt -O2 추가, fusion ON — 문제 발견)
+
+| model | baseline (ms) | optimized (ms) | speedup | ORT (ms) |
+|-------|--------------|----------------|---------|----------|
+| resnet18 | 1701 | 1690 | **1.01x** | 15 |
+| bert_tiny | 63 | 111 | 0.57x | 0.6 |
+| tinyllama_15m | 59 | 59 | **1.00x** | 1.3 |
+
+**분석:** LinalgFusion이 bert_tiny를 1.8x 악화 (62ms → 111ms). 위 2026-05-22c에서 해결.
+
+### 2026-05-22a (tile-and-fuse + fusion 제어 + vectorization, opt -O2 이전)
+
+| model | baseline (ms) | optimized (ms) | speedup | ORT (ms) |
+|-------|--------------|----------------|---------|----------|
+| resnet18 | 6490 | 6486 | **1.00x** | 16 |
+| bert_tiny | 227 | 265 | 0.85x | 0.6 |
+| tinyllama_15m | 97 | 101 | 0.96x | 1.6 |
+
+**변경사항:**
+- tile-and-fuse: conv ops에 `tileConsumerAndFuseProducersUsingSCF` 적용
+  - fill producer를 tile loop 안으로 fusion (destination operand만)
+  - input producer는 conv stride/padding 때문에 fusion 제외
+- **fusion 제어 개선**: greedy fusion(`return true`) → single-use producer만 fuse
+  - 원인 분석: greedy fusion이 bert_tiny에서 1.53x 성능 저하 유발
+  - loads/stores가 479 → 607 (+27%) 증가 — multi-use producer 재계산 때문
+  - `operand->get().hasOneUse()` 조건 추가로 bert_tiny 345ms → 266ms
+- vectorization: projected-permutation elementwise + named ops (conv/matmul/fill)
+  - `LowerVectorMultiReduction` pass 추가 (named op vectorize가 생성하는 vector.multi_reduction 처리)
+  - 실질적 영향 미미: conv input이 C_in=64 > maxDim=32라 대부분 거부됨
+- pipeline에 VectorToSCF, UBToLLVM 추가
+- DecomposeAggregated를 tiling 전으로 이동
+
+**분석:**
+- resnet18: fill fusion으로 미미한 개선
+- bert_tiny: fusion 제어로 345ms→266ms (0.66x→0.85x), 아직 baseline 대비 느림
+  - 남은 overhead: single-use fusion도 일부 복잡한 indexing map 생성
+- tinyllama_15m: 거의 baseline 수준 (0.99x)
+
+### 2026-05-03
 
 | model | baseline (ms) | optimized (ms) | speedup | ORT (ms) |
 |-------|--------------|----------------|---------|----------|
@@ -26,7 +97,7 @@ Gawee p50 latency (ms), ORT median for reference. Date: 2026-05-03.
 **Analysis:**
 - Optimized가 baseline보다 약간 느린 이유: tiling이 loop overhead를 추가하지만,
   fusion/vectorization이 아직 그 overhead를 상쇄하지 못함
-- bert_tiny baseline: LLVM IR이 tiling 없이 너��� 커서 llc parse error
+- bert_tiny baseline: LLVM IR이 tiling 없이 너무 커서 llc parse error
 - ORT 대비 ~300x 느림: scalar loop 기반이라 SIMD/vectorization 없음
 
 ## 현재 적용된 최적화
@@ -35,24 +106,26 @@ Gawee p50 latency (ms), ORT median for reference. Date: 2026-05-03.
 - **tile loop interchange**: conv (N,H,W,C_out) 순서로 spatial locality 개선
 - **loop peeling**: tail iteration 분리 (vectorization 준비)
 - **elementwise fusion**: generic op chains 합침 (중간 텐서 할당 제거)
+- **vectorization**: projected-permutation elementwise generic ops (maxDim≤32)
 - **canonicalize + CSE**: tiling/scheduling/bufferization 후 redundant op 정리
 - **LICM**: loop lowering 후 invariant 연산 hoist
 
-## 미구현 / 비활��� 최적화
+## 제한 / 미구현 최적화
 
-### 1. Vectorization (LinalgVectorization.cpp) — 비활성
-- **코드 작성 완료**, `linalg::vectorize()` 호출부 존재
-- **현재 비활성**: MLIR의 `VectorizationState::getOrCreateMaskFor`에서 segfault
-  - broadcast indexing map�� 있는 generic op에서 발생
-  - identity map만 허용해도 crash (fusion 후 생성된 op 패턴 문제)
-- **해결 방향**: MLIR 버전 업그레이드 또는 vectorize 가능 op subset을 더 좁게 선별
-- **영향**: 가장 큰 성능 개선 요인 — SIMD 없이는 ORT 대비 100x+ 느림
+### 1. Vectorization — maxDim=32 제한으로 실질적 영향 미미
+- **파이프라인 완성**: vectorize → VectorToSCF → VectorToLLVM → UBToLLVM
+- **필터**: projected-permutation + 0-result map 허용 (broadcast map 지원)
+- **제한**: maxDim=32 — LLVM backend가 큰 벡터(>128bit per lane)를 못 처리
+- **영향**: 실제 모델의 대부분 텐서가 32보다 크므로 vectorize되는 op이 거의 없음
+- **개선 방향**: tiling 후 작은 tile에 vectorize 적용 (tile-and-fuse와 조합 필요)
 
-### 2. Tile-and-Fuse
-- 현재 tiling(LinalgTransform)과 fusion(LinalgFusion)이 별도 pass
-- 정석: `scf::tileConsumerAndFuseProducersUsingSCF()`로 동시에 수행
-- **효과**: tiling된 consumer 안에 producer를 합쳐서 중간 full-size 텐서 제거
-- **복잡도**: LinalgTransform 재구성 필요
+### 2. Tile-and-Fuse — conv에 대해 부분 구현
+- conv ops: `tileConsumerAndFuseProducersUsingSCF` 적용 (fill producer만 fusion)
+- matmul ops: 아직 `tileUsingSCF` 사용 (tile-and-fuse 미적용)
+- **현재 제한**: destination operand의 fill만 fuse. input producer는 conv stride/padding으로 인해 shape mismatch 위험
+- **다음 단계**: elementwise consumers (bias_add, relu)를 conv tile loop 안으로 fuse
+  - 이를 위해서는 conv를 tiling한 후, consumer를 찾아서 fuse하는 역방향 fusion 필요
+  - 또는 bias_add를 consumer로 보고 tile-and-fuse하되 conv를 producer로 fuse
 
 ### 3. Buffer Deallocation
 - **API:** `bufferization::createOwnershipBasedBufferDeallocationPass()`
