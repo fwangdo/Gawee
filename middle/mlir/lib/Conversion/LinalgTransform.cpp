@@ -43,6 +43,8 @@
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/TilingInterfaceImpl.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Tensor/IR/TensorTilingInterfaceImpl.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/TileUsingInterface.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
@@ -458,7 +460,7 @@ static void describeGenericPlan(const GenericTransformPlan &plan) {
   setPlanNote(plan.operation, "gawee.transform.rationale", plan.rationale);
 }
 
-static void tileConvLikeOps(ModuleOp module) {
+static void tileAndFuseConvLikeOps(ModuleOp module) {
   SmallVector<ConvTilingPlan, 2> plans;
   module.walk([&](Operation *op) {
     if (!isConvLikeOp(op)) {
@@ -490,21 +492,55 @@ static void tileConvLikeOps(ModuleOp module) {
     SmallVector<OpFoldResult> tileSizes =
         getAsIndexOpFoldResult(module.getContext(), fullTileSizes);
 
-    scf::SCFTilingOptions options;
-    options.setTileSizes(tileSizes);
+    scf::SCFTilingOptions tilingOptions;
+    tilingOptions.setTileSizes(tileSizes);
     if (!plan.interchangeVector.empty())
-      options.setInterchange(plan.interchangeVector);
+      tilingOptions.setInterchange(plan.interchangeVector);
+
+    // Tile-and-fuse: tile the conv consumer and pull safe producers (fill)
+    // into the tile loop. Only fuse destination operands (fill→conv outs),
+    // not input producers, to avoid shape mismatch issues with conv strides.
+    scf::SCFTileAndFuseOptions tileAndFuseOptions;
+    tileAndFuseOptions.setTilingOptions(tilingOptions);
+    tileAndFuseOptions.fusionControlFn =
+        [](tensor::ExtractSliceOp, OpResult originalProducer,
+           bool isDestinationOperand)
+            -> std::optional<scf::SCFTileAndFuseOptions::ControlFnResult> {
+      // Only fuse destination operands (e.g. fill→conv outs).
+      // Input producers (e.g. another conv producing the input tensor)
+      // may have incompatible slice shapes due to conv strides/padding.
+      if (!isDestinationOperand)
+        return std::nullopt;
+      // Only fuse linalg.fill — the most common and safe producer.
+      Operation *producer = originalProducer.getOwner();
+      if (!isa<linalg::FillOp>(producer))
+        return std::nullopt;
+      return scf::SCFTileAndFuseOptions::ControlFnResult{
+          /*yieldProducerReplacement=*/false};
+    };
 
     IRRewriter rewriter(module.getContext());
     rewriter.setInsertionPoint(plan.operation);
-    FailureOr<scf::SCFTilingResult> result =
-        scf::tileUsingSCF(rewriter, tilingIface, options);
+    FailureOr<scf::SCFTileAndFuseResult> result =
+        scf::tileConsumerAndFuseProducersUsingSCF(rewriter, tilingIface,
+                                                   tileAndFuseOptions);
     if (failed(result)) {
-      plan.operation->emitWarning() << "conv tiling failed";
+      plan.operation->emitWarning() << "conv tile-and-fuse failed";
       continue;
     }
 
-    rewriter.replaceOp(plan.operation, result->replacements);
+    // Replace uses of the original consumer's results with the loop results.
+    for (auto &[origVal, replacement] : result->replacements) {
+      rewriter.replaceAllUsesWith(origVal, replacement);
+    }
+
+    // Clean up: erase ops that are now dead (consumer first, then producers).
+    if (plan.operation->use_empty())
+      rewriter.eraseOp(plan.operation);
+    for (Operation *fusedProducer : result->fusedProducers) {
+      if (fusedProducer->use_empty())
+        rewriter.eraseOp(fusedProducer);
+    }
   }
 }
 
@@ -608,6 +644,7 @@ struct LinalgTransformPass
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<linalg::LinalgDialect, scf::SCFDialect>();
     linalg::registerTilingInterfaceExternalModels(registry);
+    tensor::registerTilingInterfaceExternalModels(registry);
   }
 
   void runOnOperation() override {
@@ -634,7 +671,7 @@ struct LinalgTransformPass
 
     summarizeModule(module);
 
-    tileConvLikeOps(module);
+    tileAndFuseConvLikeOps(module);
     tileMatmulLikeOps(module);
     scheduleOrFuseGenericOps(module);
   }

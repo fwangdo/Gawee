@@ -204,8 +204,11 @@ target_link_libraries(gawee-opt
   MLIRMathToLLVM
   MLIRMathToLibm
   MLIRMemRefToLLVM
+  MLIRUBDialect
+  MLIRUBToLLVM
   MLIRVectorToLLVM
   MLIRVectorToLLVMPass
+  MLIRVectorToSCF
   MLIRSCFToControlFlow
   MLIRReconcileUnrealizedCasts
   MLIRIR

@@ -45,9 +45,13 @@
 #include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
+#include "mlir/Conversion/Passes.h"
+#include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
 #include "mlir/Conversion/VectorToLLVM/ConvertVectorToLLVMPass.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Dialect/Vector/Transforms/BufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/Vector/Transforms/Passes.h"
 #include "mlir/Transforms/Passes.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/DialectRegistry.h"
@@ -74,6 +78,14 @@ int main(int argc, char **argv) {
         pm.addPass(gawee::createGaweeToLinalgPass());
       });
 
+  // Register individual passes for testing
+  PassPipelineRegistration<>(
+      "gawee-vectorize-only",
+      "Run only the vectorization pass",
+      [](OpPassManager &pm) {
+        pm.addPass(gawee::createLinalgVectorizationPass());
+      });
+
   // Register full pipeline: Gawee -> Linalg -> Loops
   PassPipelineRegistration<>(
       "gawee-to-loops",
@@ -81,6 +93,10 @@ int main(int argc, char **argv) {
       [](OpPassManager &pm) {
         // Step 1: Gawee -> Linalg (on tensors)
         pm.addPass(gawee::createGaweeToLinalgPass());
+
+        // Step 1b: Decompose aggregated linalg ops (e.g. softmax) BEFORE
+        // tiling so that the decomposed primitives can be tiled and fused.
+        pm.addPass(gawee::createDecomposeAggregatedLinalgOpsPass());
 
         // Step 2: Linalg-level transforms
         pm.addPass(gawee::createLinalgTransformPass());
@@ -92,9 +108,6 @@ int main(int argc, char **argv) {
         pm.addPass(createCSEPass());
         pm.addPass(gawee::createLinalgVectorizationPass());
         pm.addPass(gawee::createLinalgVerificationPass());
-
-        // Step 3a: Decompose aggregated linalg ops
-        pm.addPass(gawee::createDecomposeAggregatedLinalgOpsPass());
 
         // Step 3b: Convert tensor.empty to bufferization.alloc_tensor
         pm.addPass(bufferization::createEmptyTensorToAllocTensorPass());
@@ -124,8 +137,12 @@ int main(int argc, char **argv) {
         // Step 1: Gawee -> Linalg (on tensors)
         pm.addPass(gawee::createGaweeToLinalgPass());
 
-        // Step 2: Linalg-level transforms
-        pm.addPass(gawee::createLinalgTransformPass());   // tiling + tile loop interchange
+        // Step 1b: Decompose aggregated linalg ops (e.g. softmax) BEFORE
+        // tiling so that the decomposed primitives can be tiled and fused.
+        pm.addPass(gawee::createDecomposeAggregatedLinalgOpsPass());
+
+        // Step 2: Linalg-level transforms (tile-and-fuse + interchange)
+        pm.addPass(gawee::createLinalgTransformPass());
         pm.addPass(createCanonicalizerPass());             // cleanup after tiling
         pm.addPass(createCSEPass());
         pm.addPass(gawee::createLinalgFusionPass());       // elementwise fusion
@@ -134,10 +151,6 @@ int main(int argc, char **argv) {
         pm.addPass(createCSEPass());
         pm.addPass(gawee::createLinalgVectorizationPass()); // vectorize small elementwise ops
         pm.addPass(gawee::createLinalgVerificationPass());
-
-        // Step 3a: Decompose aggregated linalg ops (e.g. softmax) into
-        // primitive linalg.generic / arith / math ops.
-        pm.addPass(gawee::createDecomposeAggregatedLinalgOpsPass());
 
         // Step 3b: Convert tensor.empty to bufferization.alloc_tensor
         // (required for proper bufferization)
@@ -153,10 +166,19 @@ int main(int argc, char **argv) {
         pm.addPass(createCanonicalizerPass());             // cleanup after bufferization
         pm.addPass(createCSEPass());
 
-        // Step 6: Linalg -> SCF loops
+        // Step 6: Lower complex vector ops before VectorToSCF/VectorToLLVM.
+        // vector.multi_reduction (from named op vectorization) → simpler vector ops.
+        pm.addPass(vector::createLowerVectorMultiReductionPass());
+        pm.addPass(createCanonicalizerPass());
+
+        // Step 6b: Lower vector.transfer ops to SCF loops (must happen after
+        // bufferization so operands are memrefs, and before SCFToControlFlow).
+        pm.addPass(createConvertVectorToSCFPass());
+
+        // Step 6c: Linalg -> SCF loops
         pm.addPass(createConvertLinalgToLoopsPass());
 
-        // Step 6b: Loop-level optimizations
+        // Step 6d: Loop-level optimizations
         pm.addPass(createLoopInvariantCodeMotionPass());   // LICM
 
         // Step 7: SCF -> ControlFlow (cf dialect)
@@ -176,6 +198,7 @@ int main(int argc, char **argv) {
         pm.addPass(createArithToLLVMConversionPass());
         pm.addPass(createConvertControlFlowToLLVMPass());
         pm.addPass(createConvertVectorToLLVMPass());       // vector -> LLVM
+        pm.addPass(createUBToLLVMConversionPass());         // ub.poison -> LLVM
         pm.addPass(createFinalizeMemRefToLLVMConversionPass());
         pm.addPass(createConvertFuncToLLVMPass());
 
@@ -268,7 +291,11 @@ int main(int argc, char **argv) {
   registry.insert<bufferization::BufferizationDialect>();
   registry.insert<cf::ControlFlowDialect>();
   registry.insert<LLVM::LLVMDialect>();
+  registry.insert<ub::UBDialect>();
   registry.insert<vector::VectorDialect>();
+
+  // Register UB to LLVM conversion interface
+  ub::registerConvertUBToLLVMInterface(registry);
 
   // Register bufferization interfaces for each dialect
   // These tell one-shot-bufferize how to bufferize ops from each dialect

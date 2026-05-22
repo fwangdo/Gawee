@@ -6,7 +6,7 @@
 //
 // Current behavior:
 //   - vectorizes elementwise linalg.generic ops with static shapes
-//   - skips conv/matmul (require more complex vector lowering)
+//   - vectorizes tiled named ops (conv, matmul) with small static shapes
 //   - skips ops with large shapes to avoid generating huge vectors
 //===----------------------------------------------------------------------===//
 
@@ -14,6 +14,7 @@
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/PatternMatch.h"
@@ -50,9 +51,8 @@ static bool allShapesSmallAndStatic(linalg::LinalgOp op, int64_t maxDim) {
 
 /// Return true if the op is a linalg.generic suitable for vectorization:
 /// - all-parallel iterators (elementwise)
-/// - all indexing maps are identity (no broadcast/transpose)
-/// The identity-map requirement avoids masked vectorization paths that
-/// can crash on some MLIR versions.
+/// - all indexing maps are projected permutations (identity, broadcast, or
+///   permutation — but no complex affine expressions)
 static bool isVectorizableElementwise(linalg::LinalgOp op) {
   auto genericOp = dyn_cast<linalg::GenericOp>(op.getOperation());
   if (!genericOp)
@@ -62,26 +62,35 @@ static bool isVectorizableElementwise(linalg::LinalgOp op) {
         return t == utils::IteratorType::parallel;
       }))
     return false;
-  // Require all indexing maps to be identity — no broadcast, no permutation.
-  // This avoids triggering masked vectorization (getOrCreateMaskFor) which
-  // can segfault on broadcast maps.
-  unsigned numLoops = op.getNumLoops();
+  // Allow projected permutations (includes identity and broadcast maps).
+  // Also allow scalar maps like (d0,d1,d2) -> () for scalar broadcast operands.
   for (AffineMap map : genericOp.getIndexingMapsArray()) {
-    if (!map.isIdentity() || map.getNumDims() != numLoops)
+    if (map.getNumResults() == 0)
+      continue; // scalar operand — always safe to broadcast
+    if (!map.isProjectedPermutation())
       return false;
   }
   return true;
+}
+
+/// Return true if the op is a named linalg op that linalg::vectorize() knows
+/// how to handle (conv, matmul, fill, etc.). These are typically the tiled
+/// versions with small shapes that fit in vector registers.
+static bool isVectorizableNamedOp(linalg::LinalgOp op) {
+  return isa<linalg::Conv2DNchwFchwOp, linalg::MatmulOp,
+             linalg::MatmulTransposeBOp, linalg::FillOp>(op.getOperation());
 }
 
 static void vectorizeEligibleOps(ModuleOp module) {
   // Collect candidates first — vectorize() replaces ops.
   SmallVector<linalg::LinalgOp> candidates;
   module.walk([&](linalg::LinalgOp op) {
-    if (!isVectorizableElementwise(op))
+    bool eligible = isVectorizableElementwise(op) || isVectorizableNamedOp(op);
+    if (!eligible)
       return;
-    // Only vectorize small shapes (from tiled ops or naturally small ops).
-    // Max 64 per dimension keeps vectors reasonable for CPU SIMD.
-    if (!allShapesSmallAndStatic(op, /*maxDim=*/64))
+    // Only vectorize ops with small static shapes. Max 32 per dimension
+    // keeps vectors within what LLVM backends can handle on CPU targets.
+    if (!allShapesSmallAndStatic(op, /*maxDim=*/32))
       return;
     candidates.push_back(op);
   });
@@ -89,8 +98,11 @@ static void vectorizeEligibleOps(ModuleOp module) {
   IRRewriter rewriter(module.getContext());
   for (linalg::LinalgOp op : candidates) {
     rewriter.setInsertionPoint(op);
-    // Empty inputVectorSizes → infer from op's static shapes.
-    (void)linalg::vectorize(rewriter, op);
+    FailureOr<linalg::VectorizationResult> result =
+        linalg::vectorize(rewriter, op);
+    if (succeeded(result)) {
+      rewriter.replaceOp(op, result->replacements);
+    }
   }
 }
 
@@ -106,15 +118,11 @@ struct LinalgVectorizationPass
   }
 
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<linalg::LinalgDialect>();
+    registry.insert<linalg::LinalgDialect, vector::VectorDialect>();
   }
 
   void runOnOperation() override {
-    // Disabled: linalg::vectorize() crashes in VectorizationState::
-    // getOrCreateMaskFor on broadcast indexing maps in this MLIR build.
-    // The vectorizeEligibleOps() code is kept for when a fixed MLIR
-    // version is available.
-    (void)getOperation();
+    vectorizeEligibleOps(getOperation());
   }
 };
 
