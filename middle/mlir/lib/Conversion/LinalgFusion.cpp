@@ -131,13 +131,21 @@ struct LinalgFusionPass
     // 1. Analyze and tag fusion candidates (for diagnostics).
     analyzeProducerConsumerChains(module);
 
-    // 2. Apply actual elementwise fusion.
-    // This fuses chains of elementwise linalg.generic ops by merging
-    // a producer's body into its consumer, eliminating intermediate tensors.
-    RewritePatternSet patterns(module.getContext());
-    linalg::ControlFusionFn controlFn = [](OpOperand *) { return true; };
-    linalg::populateElementwiseOpsFusionPatterns(patterns, controlFn);
-    (void)applyPatternsGreedily(module, std::move(patterns));
+    // 2. Elementwise fusion is DISABLED.
+    //
+    // Rationale (2026-05-22):
+    // populateElementwiseOpsFusionPatterns merges producer/consumer elementwise
+    // chains into a single linalg.generic with complex affine indexing maps.
+    // This prevents LLVM's LoopVectorize (via opt -O2) from auto-vectorizing
+    // the resulting loops.  Without fusion, each elementwise op lowers to a
+    // separate, simple loop that LLVM can vectorize independently.
+    //
+    // Ablation results (with opt -O2):
+    //   bert_tiny:  fusion ON = 111ms, fusion OFF = 62ms (baseline = 63ms)
+    //   tinyllama:  fusion ON =  59ms, fusion OFF = 58ms (baseline = 59ms)
+    //
+    // Re-enable when MLIR-level vectorization handles the fused ops directly,
+    // so we don't rely on LLVM's LoopVectorize for the fused body.
   }
 };
 

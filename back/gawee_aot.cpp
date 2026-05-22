@@ -343,15 +343,33 @@ void buildExecutable(const fs::path &abiSource,
 
   fs::path llvmIr = translateIfNeeded(loweredInput, llvmBin);
   fs::create_directories(output.parent_path());
+
+  // Step A: Run LLVM middle-end optimizations (opt -O2).
+  // llc alone only does codegen (instruction selection, register allocation).
+  // opt -O2 runs the full LLVM optimization pipeline: loop vectorization,
+  // SLP vectorization, GVN, LICM, inlining, etc.
+  fs::path opt = llvmBin / "opt";
+  if (!fs::exists(opt))
+    throw std::runtime_error("Could not find opt in " + llvmBin.string());
+  fs::path optimizedIr = fs::temp_directory_path() / "gawee_aot_optimized.ll";
+  {
+    std::ostringstream optCmd;
+    optCmd << opt.string() << " -O2 -S " << llvmIr.string()
+           << " -o " << optimizedIr.string();
+    runChecked(optCmd.str());
+  }
+
+  // Step B: Codegen (llc -O2) on the optimized IR.
   fs::path llc = llvmBin / "llc";
   if (!fs::exists(llc))
     throw std::runtime_error("Could not find llc in " + llvmBin.string());
   fs::path loweredObj = fs::temp_directory_path() / "gawee_aot_lowered.o";
-
-  std::ostringstream llcCmd;
-  llcCmd << llc.string() << " -filetype=obj " << llvmIr.string() << " -o "
-         << loweredObj.string();
-  runChecked(llcCmd.str());
+  {
+    std::ostringstream llcCmd;
+    llcCmd << llc.string() << " -O2 -filetype=obj " << optimizedIr.string()
+           << " -o " << loweredObj.string();
+    runChecked(llcCmd.str());
+  }
 
   std::ostringstream cmd;
   cmd << "/usr/bin/clang++ -std=c++17 "
