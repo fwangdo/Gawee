@@ -460,33 +460,119 @@ static void describeGenericPlan(const GenericTransformPlan &plan) {
   setPlanNote(plan.operation, "gawee.transform.rationale", plan.rationale);
 }
 
-static void tileAndFuseConvLikeOps(ModuleOp module) {
-  SmallVector<ConvTilingPlan, 2> plans;
-  module.walk([&](Operation *op) {
-    if (!isConvLikeOp(op)) {
-      return;
-    }
-    plans.push_back(buildConvPlan(cast<linalg::LinalgOp>(op)));
-  });
+/// Walk forward from `root` along single-use def chains, collecting
+/// elementwise linalg.generic consumers (e.g. bias_add, relu).
+///
+/// Stop when a consumer has a tensor input that comes from outside the chain
+/// (e.g. residual add with a skip connection). Such ops would require the
+/// tile-and-fuse API to slice an unrelated producer, which can cause
+/// incorrect memory access.
+static SmallVector<Operation *> findElementwiseConsumerChain(Operation *root) {
+  SmallVector<Operation *> chain;
+  Operation *current = root;
+  while (current->getNumResults() == 1 && current->getResult(0).hasOneUse()) {
+    Operation *user = *current->getResult(0).getUsers().begin();
+    auto genericOp = dyn_cast<linalg::GenericOp>(user);
+    if (!genericOp || !isElementwiseGenericHeuristic(genericOp))
+      break;
 
-  for (const ConvTilingPlan &plan : plans) {
+    // Check that every tensor input of this consumer either:
+    //   (a) comes from `current` (the chain predecessor), or
+    //   (b) is a scalar broadcast (rank-0 or rank-1 with broadcast map).
+    // If any tensor input comes from outside the chain, stop here.
+    bool allInputsFromChain = true;
+    for (Value input : genericOp.getInputs()) {
+      if (input == current->getResult(0))
+        continue;
+      auto tensorType = dyn_cast<RankedTensorType>(input.getType());
+      if (!tensorType)
+        continue;
+      // Allow scalar/1D broadcast inputs (e.g. bias tensor<64xf32>).
+      if (tensorType.getRank() <= 1)
+        continue;
+      // This is a full-rank tensor input from outside the chain — stop.
+      allInputsFromChain = false;
+      break;
+    }
+    if (!allInputsFromChain)
+      break;
+
+    chain.push_back(user);
+    current = user;
+  }
+  return chain;
+}
+
+static void tileAndFuseConvLikeOps(ModuleOp module) {
+  // Process one conv at a time: tile-and-fuse may invalidate pointers to
+  // subsequent ops (especially when consumer chains are erased/replaced).
+  // Re-walk after each successful transformation.
+  while (true) {
+    Operation *nextConv = nullptr;
+    module.walk([&](Operation *op) {
+      if (isConvLikeOp(op) && !op->hasAttr("gawee.transform.tiled")) {
+        nextConv = op;
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+    if (!nextConv)
+      break;
+
+    ConvTilingPlan plan = buildConvPlan(cast<linalg::LinalgOp>(nextConv));
     describeConvPlan(plan);
 
-    auto tilingIface = dyn_cast<TilingInterface>(plan.operation);
+    // Mark as visited so the re-walk does not pick up this conv again
+    // (nor its fused copy inside the tile loop, which inherits all attrs).
+    plan.operation->setAttr("gawee.transform.tiled",
+                            BoolAttr::get(module.getContext(), true));
+
+    // Look for elementwise consumer chain: conv → bias_add → relu ...
+    // NOTE: Chain fusion is correct for isolated conv+chain patterns (verified
+    // on tile_fuse_test.mlir, stride=2 conv, padded conv, two-conv chains).
+    // However, it causes a runtime segfault on resnet18 (20 convs) that has
+    // not been root-caused yet. Disabled until the issue is resolved.
+    // TODO: enable and debug resnet18 segfault.
+    SmallVector<Operation *> consumerChain;
+    // SmallVector<Operation *> consumerChain =
+    //     findElementwiseConsumerChain(plan.operation);
+
+    // Decide tiling root: last consumer if chain exists, otherwise conv.
+    Operation *tilingRoot =
+        consumerChain.empty() ? plan.operation : consumerChain.back();
+
+    auto tilingIface = dyn_cast<TilingInterface>(tilingRoot);
     if (!tilingIface) {
-      plan.operation->emitRemark() << "conv op does not implement "
-                                      "TilingInterface, skipping tiling";
-      continue;
+      tilingRoot->emitRemark() << "tiling root does not implement "
+                                  "TilingInterface, skipping tiling";
+      break;
     }
 
-    // Conv2D NCHW_FCHW has 7 loops: N, C_out, H, W, C_in, KH, KW.
-    // parallelTileSizes covers the first 4 (parallel dims).
-    // Pad with 0s for the remaining reduction dims (no tiling).
-    unsigned numLoops = cast<linalg::LinalgOp>(plan.operation).getNumLoops();
-    SmallVector<int64_t> fullTileSizes(numLoops, 0);
-    for (unsigned i = 0; i < plan.parallelTileSizes.size() && i < numLoops;
-         ++i) {
-      fullTileSizes[i] = plan.parallelTileSizes[i];
+    // Build tile sizes for the tiling root.
+    // If chain exists: the root is an elementwise generic with the same
+    // output shape [N,C,H,W], so use parallelTileSizes directly.
+    // If no chain: conv has 7 loops (4 parallel + 3 reduction), pad with 0s.
+    SmallVector<int64_t> fullTileSizes;
+    SmallVector<int64_t> interchangeVec;
+    if (consumerChain.empty()) {
+      unsigned numLoops =
+          cast<linalg::LinalgOp>(plan.operation).getNumLoops();
+      fullTileSizes.assign(numLoops, 0);
+      for (unsigned i = 0;
+           i < plan.parallelTileSizes.size() && i < numLoops; ++i) {
+        fullTileSizes[i] = plan.parallelTileSizes[i];
+      }
+      interchangeVec = plan.interchangeVector;
+    } else {
+      // Elementwise generic root: all loops are parallel, same count as
+      // parallelTileSizes (4 for NCHW).
+      fullTileSizes = plan.parallelTileSizes;
+      // Use only the parallel-dim interchange: {0,2,3,1}.
+      if (plan.interchangeVector.size() >= 4)
+        interchangeVec = {plan.interchangeVector[0],
+                          plan.interchangeVector[1],
+                          plan.interchangeVector[2],
+                          plan.interchangeVector[3]};
     }
 
     SmallVector<OpFoldResult> tileSizes =
@@ -494,49 +580,60 @@ static void tileAndFuseConvLikeOps(ModuleOp module) {
 
     scf::SCFTilingOptions tilingOptions;
     tilingOptions.setTileSizes(tileSizes);
-    if (!plan.interchangeVector.empty())
-      tilingOptions.setInterchange(plan.interchangeVector);
+    if (!interchangeVec.empty())
+      tilingOptions.setInterchange(interchangeVec);
 
-    // Tile-and-fuse: tile the conv consumer and pull safe producers (fill)
-    // into the tile loop. Only fuse destination operands (fill→conv outs),
-    // not input producers, to avoid shape mismatch issues with conv strides.
+    // Tile-and-fuse: tile the root consumer and fuse producers backward.
+    // When the root is the last elementwise consumer, the API walks backward
+    // through bias_add → conv → fill, fusing each into the tile loop.
     scf::SCFTileAndFuseOptions tileAndFuseOptions;
     tileAndFuseOptions.setTilingOptions(tilingOptions);
     tileAndFuseOptions.fusionControlFn =
         [](tensor::ExtractSliceOp, OpResult originalProducer,
            bool isDestinationOperand)
             -> std::optional<scf::SCFTileAndFuseOptions::ControlFnResult> {
-      // Only fuse destination operands (e.g. fill→conv outs).
-      // Input producers (e.g. another conv producing the input tensor)
-      // may have incompatible slice shapes due to conv strides/padding.
-      if (!isDestinationOperand)
-        return std::nullopt;
-      // Only fuse linalg.fill — the most common and safe producer.
       Operation *producer = originalProducer.getOwner();
-      if (!isa<linalg::FillOp>(producer))
-        return std::nullopt;
-      return scf::SCFTileAndFuseOptions::ControlFnResult{
-          /*yieldProducerReplacement=*/false};
+      // fill: always safe to fuse (destination init).
+      if (isa<linalg::FillOp>(producer))
+        return scf::SCFTileAndFuseOptions::ControlFnResult{
+            /*yieldProducerReplacement=*/false};
+      // conv: main compute producer in the chain.
+      if (isa<linalg::Conv2DNchwFchwOp>(producer))
+        return scf::SCFTileAndFuseOptions::ControlFnResult{
+            /*yieldProducerReplacement=*/false};
+      // elementwise generic: bias_add and similar ops in the chain.
+      if (auto genericOp = dyn_cast<linalg::GenericOp>(producer)) {
+        if (isElementwiseGenericHeuristic(genericOp))
+          return scf::SCFTileAndFuseOptions::ControlFnResult{
+              /*yieldProducerReplacement=*/false};
+      }
+      return std::nullopt;
     };
 
     IRRewriter rewriter(module.getContext());
-    rewriter.setInsertionPoint(plan.operation);
+    rewriter.setInsertionPoint(tilingRoot);
     FailureOr<scf::SCFTileAndFuseResult> result =
         scf::tileConsumerAndFuseProducersUsingSCF(rewriter, tilingIface,
                                                    tileAndFuseOptions);
     if (failed(result)) {
-      plan.operation->emitWarning() << "conv tile-and-fuse failed";
-      continue;
+      tilingRoot->emitWarning() << "conv tile-and-fuse failed";
+      break;
     }
 
-    // Replace uses of the original consumer's results with the loop results.
+    // Replace uses of the original tiling root's results with loop results.
     for (auto &[origVal, replacement] : result->replacements) {
       rewriter.replaceAllUsesWith(origVal, replacement);
     }
 
-    // Clean up: erase ops that are now dead (consumer first, then producers).
-    if (plan.operation->use_empty())
+    // Clean up: erase dead ops (tiling root, conv, and all fused producers).
+    if (tilingRoot->use_empty())
+      rewriter.eraseOp(tilingRoot);
+    if (tilingRoot != plan.operation && plan.operation->use_empty())
       rewriter.eraseOp(plan.operation);
+    for (Operation *op : consumerChain) {
+      if (op != tilingRoot && op->use_empty())
+        rewriter.eraseOp(op);
+    }
     for (Operation *fusedProducer : result->fusedProducers) {
       if (fusedProducer->use_empty())
         rewriter.eraseOp(fusedProducer);

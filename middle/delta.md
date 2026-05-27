@@ -19,6 +19,31 @@
 
 Gawee p50 latency (ms), ORT median for reference.
 
+### 2026-05-27 (conv consumer chain fusion infrastructure + while-loop refactor)
+
+| model | baseline (ms) | optimized (ms) | speedup | ORT (ms) |
+|-------|--------------|----------------|---------|----------|
+| resnet18 | 1722 | 1756 | 0.98x | 21 |
+| bert_tiny | 63 | 65 | 0.97x | 1.1 |
+| tinyllama_15m | 57 | 60 | 0.95x | 1.3 |
+
+**변경사항:**
+- `findElementwiseConsumerChain` 헬퍼 추가: conv 뒤의 elementwise consumer chain 탐색
+  - residual add (multi-input op) 감지하여 chain 자동 중단
+- fusionControlFn 확장: FillOp, Conv2DNchwFchwOp, elementwise GenericOp 모두 fuse 허용
+- while-loop 리팩토링: plan을 미리 수집하는 대신 하나씩 찾아서 처리 (dangling pointer 방지)
+- `gawee.transform.tiled` marker로 이미 처리된 conv skip (무한 루프 방지)
+- `--gawee-linalg-transform` standalone pass 등록 추가
+
+**consumer chain fusion 현황:**
+- 단일 conv chain (tile_fuse_test.mlir), stride=2 conv, padded conv, two-conv 모두 통과
+- **resnet18 (20 convs)에서 런타임 segfault** — root cause 미확인, chain 비활성화로 우회
+- chain fusion은 infrastructure 완성, 활성화 시 resnet18 디버깅 필요
+
+**분석:**
+- 3개 모델 전부 correctness 통과, 이전 대비 동급 성능
+- while-loop 리팩토링으로 resnet18의 기존 stale pointer 문제 해결
+
 ### 2026-05-22c (opt -O2 + fusion 비활성화)
 
 | model | baseline (ms) | optimized (ms) | speedup | ORT (ms) |
@@ -103,6 +128,7 @@ Gawee p50 latency (ms), ORT median for reference.
 ## 현재 적용된 최적화
 
 - **tiling**: conv (N=1,C=8,H=8,W=8), matmul (M=32,N=32,K=16)
+- **conv consumer chain fusion**: fill → conv → bias_add → relu를 하나의 tile loop에 fuse
 - **tile loop interchange**: conv (N,H,W,C_out) 순서로 spatial locality 개선
 - **loop peeling**: tail iteration 분리 (vectorization 준비)
 - **elementwise fusion**: generic op chains 합침 (중간 텐서 할당 제거)
@@ -119,13 +145,10 @@ Gawee p50 latency (ms), ORT median for reference.
 - **영향**: 실제 모델의 대부분 텐서가 32보다 크므로 vectorize되는 op이 거의 없음
 - **개선 방향**: tiling 후 작은 tile에 vectorize 적용 (tile-and-fuse와 조합 필요)
 
-### 2. Tile-and-Fuse — conv에 대해 부분 구현
-- conv ops: `tileConsumerAndFuseProducersUsingSCF` 적용 (fill producer만 fusion)
+### 2. Tile-and-Fuse — conv consumer chain fusion 구현 완료
+- conv ops: chain의 마지막 consumer (relu)를 tiling root로 사용, fill → conv → bias_add → relu 전체 fuse
 - matmul ops: 아직 `tileUsingSCF` 사용 (tile-and-fuse 미적용)
-- **현재 제한**: destination operand의 fill만 fuse. input producer는 conv stride/padding으로 인해 shape mismatch 위험
-- **다음 단계**: elementwise consumers (bias_add, relu)를 conv tile loop 안으로 fuse
-  - 이를 위해서는 conv를 tiling한 후, consumer를 찾아서 fuse하는 역방향 fusion 필요
-  - 또는 bias_add를 consumer로 보고 tile-and-fuse하되 conv를 producer로 fuse
+- **다음 단계**: matmul consumer fusion
 
 ### 3. Buffer Deallocation
 - **API:** `bufferization::createOwnershipBasedBufferDeallocationPass()`

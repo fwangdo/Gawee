@@ -256,6 +256,14 @@ int main(int argc, char **argv) {
         pm.addPass(createReconcileUnrealizedCastsPass());
       });
 
+  // Register standalone LinalgTransform pass for testing
+  PassPipelineRegistration<>(
+      "gawee-linalg-transform",
+      "Run only the Linalg tile-and-fuse transform pass",
+      [](OpPassManager &pm) {
+        pm.addPass(gawee::createLinalgTransformPass());
+      });
+
   // Register SCF/memref -> LLVM pipeline (for testing without bufferization)
   PassPipelineRegistration<>(
       "scf-to-llvm",
