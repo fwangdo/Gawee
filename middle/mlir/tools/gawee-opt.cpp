@@ -17,6 +17,7 @@
 #include "Gawee/GaweeDialect.h"
 #include "Conversion/GaweePasses.h"
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -290,6 +291,7 @@ int main(int argc, char **argv) {
   registry.insert<gawee::GaweeDialect>();
 
   // Target dialects (output of conversion)
+  registry.insert<affine::AffineDialect>();
   registry.insert<linalg::LinalgDialect>();
   registry.insert<arith::ArithDialect>();
   registry.insert<tensor::TensorDialect>();
