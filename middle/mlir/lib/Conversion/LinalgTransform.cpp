@@ -634,19 +634,61 @@ static void tileAndFuseConvLikeOps(ModuleOp module) {
       rewriter.replaceAllUsesWith(origVal, replacement);
     }
 
-    // Clean up: erase dead ops (tiling root, conv, and all fused producers).
-    if (tilingRoot->use_empty())
-      rewriter.eraseOp(tilingRoot);
-    if (tilingRoot != plan.operation && plan.operation->use_empty())
-      rewriter.eraseOp(plan.operation);
-    for (Operation *op : consumerChain) {
-      if (op != tilingRoot && op->use_empty())
+    // Clean up: erase dead original ops.  Collect into a set first to
+    // avoid double-erasing ops that appear in both consumerChain and
+    // fusedProducers.
+    DenseSet<Operation *> toErase;
+    toErase.insert(tilingRoot);
+    if (tilingRoot != plan.operation)
+      toErase.insert(plan.operation);
+    for (Operation *op : consumerChain)
+      toErase.insert(op);
+    for (Operation *fusedProducer : result->fusedProducers)
+      toErase.insert(fusedProducer);
+
+    // The fusion API creates dead tensor.extract_slice ops inside the tiled
+    // loop that reference original producer results (e.g. slicing from the
+    // original fill/conv/bias_add).  These dead slices are unused but keep
+    // the original ops alive, preventing their erasure.  Walk the loop body
+    // and erase any dead extract_slices whose source is an op we want to
+    // erase.
+    for (auto loopOp : result->loops) {
+      SmallVector<tensor::ExtractSliceOp> deadSlices;
+      loopOp->walk([&](tensor::ExtractSliceOp sliceOp) {
+        if (!sliceOp->use_empty())
+          return;
+        Value source = sliceOp.getSource();
+        if (source.getDefiningOp() &&
+            toErase.contains(source.getDefiningOp())) {
+          deadSlices.push_back(sliceOp);
+        }
+      });
+      for (auto sliceOp : deadSlices)
+        rewriter.eraseOp(sliceOp);
+    }
+
+    // Erase original ops: consumers before producers so that each op's
+    // users are already gone when we try to erase it.
+    // Order: tilingRoot (outermost consumer) → chain in reverse → conv → fills
+    DenseSet<Operation *> erased;
+    auto tryErase = [&](Operation *op) {
+      if (erased.contains(op))
+        return;
+      if (op->use_empty()) {
         rewriter.eraseOp(op);
-    }
-    for (Operation *fusedProducer : result->fusedProducers) {
-      if (fusedProducer->use_empty())
-        rewriter.eraseOp(fusedProducer);
-    }
+        erased.insert(op);
+      }
+    };
+    // 1. tilingRoot (relu) — its results were replaced by loop results.
+    tryErase(tilingRoot);
+    // 2. Chain members in reverse (bias_add before conv's direct consumer).
+    for (auto it = consumerChain.rbegin(); it != consumerChain.rend(); ++it)
+      tryErase(*it);
+    // 3. Conv (plan.operation).
+    tryErase(plan.operation);
+    // 4. Fused producers (fill ops etc).
+    for (Operation *fusedProducer : result->fusedProducers)
+      tryErase(fusedProducer);
   }
 }
 
